@@ -1,0 +1,160 @@
+<Window x:Class="ScreenSnap.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="ScreenSnap — Preferences"
+        Height="428"
+        Width="400"
+        WindowStyle="None"
+        AllowsTransparency="False"
+        ResizeMode="NoResize"
+        Background="{StaticResource Brush.App}"
+        Foreground="{StaticResource Brush.TextPrimary}"
+        FontFamily="Segoe UI Variable, Segoe UI"
+        WindowStartupLocation="CenterScreen"
+        MouseLeftButtonDown="Window_MouseLeftButtonDown">
+    <Grid Margin="20,16,20,18">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <Grid Grid.Row="0">
+            <TextBlock Text="Preferences"
+                       FontSize="18"
+                       FontWeight="SemiBold"
+                       VerticalAlignment="Center" />
+            <Button Content="✕"
+                    Click="CloseButton_Click"
+                    Style="{StaticResource IconButton}"
+                    HorizontalAlignment="Right" />
+        </Grid>
+
+        <TextBlock Grid.Row="1"
+                   Text="ScreenSnap settings"
+                   Foreground="{StaticResource Brush.TextSecondary}"
+                   FontSize="12"
+                   Margin="0,4,0,18" />
+
+        <!-- Capture folder -->
+        <TextBlock Grid.Row="2"
+                   Text="Capture folder"
+                   Foreground="{StaticResource Brush.TextSecondary}"
+                   FontSize="13"
+                   Margin="2,0,0,6" />
+        <Grid Grid.Row="3">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <Border Grid.Column="0"
+                    Background="{StaticResource Brush.Card}"
+                    BorderBrush="{StaticResource Brush.Stroke}"
+                    BorderThickness="1"
+                    CornerRadius="4"
+                    Padding="10,0"
+                    Margin="0,0,8,0"
+                    Height="32">
+                <TextBlock Name="FolderPathText"
+                           Foreground="{StaticResource Brush.TextTertiary}"
+                           FontSize="11"
+                           VerticalAlignment="Center"
+                           TextTrimming="CharacterEllipsis"
+                           ToolTipService.InitialShowDelay="200" />
+            </Border>
+            <Button Grid.Column="1"
+                    Content="Change…"
+                    Click="ChooseFolderButton_Click"
+                    Style="{StaticResource SubtleButton}" />
+        </Grid>
+
+        <Border Grid.Row="4"
+                Height="1"
+                Background="{StaticResource Brush.Stroke}"
+                Margin="0,16,0,14" />
+
+        <!-- Global shortcut -->
+        <Grid Grid.Row="5">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+            <TextBlock Grid.Column="0"
+                       Text="Global shortcut"
+                       Foreground="{StaticResource Brush.TextSecondary}"
+                       FontSize="13"
+                       VerticalAlignment="Center"
+                       Margin="2,0,12,0" />
+            <ComboBox Grid.Column="1"
+                      Name="HotKeyCombo"
+                      Style="{StaticResource DarkCombo}"
+                      SelectionChanged="HotKeyCombo_SelectionChanged" />
+        </Grid>
+
+        <TextBlock Grid.Row="6"
+                   Name="HotKeyStatusText"
+                   Foreground="{StaticResource Brush.TextTertiary}"
+                   FontSize="11"
+                   TextWrapping="Wrap"
+                   Margin="2,8,0,0" />
+
+        <!-- Accent color -->
+        <Grid Grid.Row="7" Margin="0,16,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <TextBlock Grid.Column="0"
+                       Text="Accent color"
+                       Foreground="{StaticResource Brush.TextSecondary}"
+                       FontSize="13"
+                       VerticalAlignment="Center"
+                       Margin="2,0,12,0" />
+            <Border Grid.Column="1"
+                    Width="24" Height="24"
+                    CornerRadius="4"
+                    Background="{DynamicResource Brush.Accent}"
+                    BorderBrush="{StaticResource Brush.StrokeSubtle}"
+                    BorderThickness="1"
+                    Margin="0,0,8,0" />
+            <TextBox Grid.Column="2"
+                     Name="AccentHexInput"
+                     Style="{StaticResource DarkTextBox}"
+                     MaxLength="7"
+                     KeyDown="AccentHexInput_KeyDown"
+                     Margin="0,0,8,0" />
+            <Button Grid.Column="3"
+                    Content="Apply"
+                    Click="ApplyAccent_Click"
+                    Style="{StaticResource SubtleButton}" />
+        </Grid>
+
+        <!-- Footer actions -->
+        <Grid Grid.Row="10">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <Button Grid.Column="0"
+                    Content="🖼  Gallery"
+                    Click="GalleryButton_Click"
+                    Style="{StaticResource SubtleButton}"
+                    HorizontalContentAlignment="Center"
+                    Margin="0,0,8,0" />
+            <Button Grid.Column="1"
+                    Content="Close"
+                    Click="CloseButton_Click"
+                    Style="{StaticResource SubtleButton}" />
+        </Grid>
+    </Grid>
+</Window>

@@ -1,0 +1,172 @@
+<Window x:Class="ScreenSnap.GalleryWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="ScreenSnap — Gallery"
+        Height="620"
+        Width="880"
+        MinHeight="360"
+        MinWidth="520"
+        Background="{StaticResource Brush.App}"
+        Foreground="{StaticResource Brush.TextPrimary}"
+        FontFamily="Segoe UI Variable, Segoe UI"
+        WindowStartupLocation="CenterScreen">
+    <Grid Margin="18">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0"
+                   Text="Captures"
+                   FontSize="22"
+                   FontWeight="SemiBold" />
+
+        <Grid Grid.Row="1" Margin="0,12,0,14">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+
+            <Border Grid.Column="0"
+                    Background="{StaticResource Brush.Card}"
+                    BorderBrush="{StaticResource Brush.Stroke}"
+                    BorderThickness="1"
+                    CornerRadius="4"
+                    Padding="12,0"
+                    Margin="0,0,10,0"
+                    VerticalAlignment="Stretch">
+                <TextBlock Name="FolderPathText"
+                           Foreground="{StaticResource Brush.TextSecondary}"
+                           FontSize="12"
+                           VerticalAlignment="Center"
+                           TextTrimming="CharacterEllipsis" />
+            </Border>
+
+            <Button Grid.Column="1"
+                    Content="Change folder…"
+                    Click="ChangeFolder_Click"
+                    Style="{StaticResource SubtleButton}"
+                    Width="118"
+                    Margin="0,0,8,0" />
+            <Button Grid.Column="2"
+                    Content="Open folder"
+                    Click="OpenFolder_Click"
+                    Style="{StaticResource SubtleButton}"
+                    Width="118"
+                    Margin="0,0,8,0" />
+            <Button Grid.Column="3"
+                    Content="Refresh"
+                    Click="RefreshButton_Click"
+                    Style="{StaticResource SubtleButton}"
+                    Margin="0,0,8,0" />
+            <Button Grid.Column="4"
+                    Content="⚙  Preferences"
+                    Click="Preferences_Click"
+                    Style="{StaticResource SubtleButton}" />
+        </Grid>
+
+        <Grid Grid.Row="2">
+            <ListBox Name="ThumbnailList"
+                     SelectionMode="Extended"
+                     Background="Transparent"
+                     BorderThickness="0"
+                     Padding="0"
+                     Focusable="True"
+                     ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                     ScrollViewer.VerticalScrollBarVisibility="Auto"
+                     MouseDoubleClick="Thumbnail_DoubleClick"
+                     SelectionChanged="ThumbnailList_SelectionChanged"
+                     PreviewKeyDown="ThumbnailList_PreviewKeyDown"
+                     PreviewMouseLeftButtonDown="ThumbnailList_PreviewMouseLeftButtonDown"
+                     PreviewMouseMove="ThumbnailList_PreviewMouseMove"
+                     PreviewMouseLeftButtonUp="ThumbnailList_PreviewMouseLeftButtonUp"
+                     PreviewMouseRightButtonDown="ThumbnailList_PreviewMouseRightButtonDown"
+                     ContextMenuOpening="ThumbnailList_ContextMenuOpening">
+                <ListBox.ContextMenu>
+                    <ContextMenu Closed="ContextMenu_Closed">
+                        <MenuItem Name="RenameMenuItem" Header="Rename…" Click="Rename_Click" />
+                        <MenuItem Header="Copy path" Click="CopyPath_Click" />
+                    </ContextMenu>
+                </ListBox.ContextMenu>
+                <ListBox.ItemsPanel>
+                    <ItemsPanelTemplate>
+                        <WrapPanel Orientation="Horizontal" />
+                    </ItemsPanelTemplate>
+                </ListBox.ItemsPanel>
+                <ListBox.ItemContainerStyle>
+                    <Style TargetType="ListBoxItem">
+                        <Setter Property="Margin" Value="0,0,12,12" />
+                        <Setter Property="Padding" Value="0" />
+                        <Setter Property="Template">
+                            <Setter.Value>
+                                <ControlTemplate TargetType="ListBoxItem">
+                                    <Border Name="CardBorder"
+                                            Background="{StaticResource Brush.Card}"
+                                            BorderBrush="{StaticResource Brush.Stroke}"
+                                            BorderThickness="1"
+                                            CornerRadius="5">
+                                        <ContentPresenter />
+                                    </Border>
+                                    <ControlTemplate.Triggers>
+                                        <Trigger Property="IsMouseOver" Value="True">
+                                            <Setter TargetName="CardBorder" Property="Background" Value="{StaticResource Brush.CardHover}" />
+                                        </Trigger>
+                                        <Trigger Property="IsSelected" Value="True">
+                                            <Setter TargetName="CardBorder" Property="BorderBrush" Value="{StaticResource Brush.Accent}" />
+                                        </Trigger>
+                                    </ControlTemplate.Triggers>
+                                </ControlTemplate>
+                            </Setter.Value>
+                        </Setter>
+                    </Style>
+                </ListBox.ItemContainerStyle>
+                <ListBox.ItemTemplate>
+                    <DataTemplate>
+                        <StackPanel Width="240">
+                            <Border CornerRadius="4,4,0,0"
+                                    Background="#FF1B1B1B"
+                                    Height="150"
+                                    ClipToBounds="True">
+                                <Image Source="{Binding Thumbnail}"
+                                       Stretch="Uniform"
+                                       Margin="6" />
+                            </Border>
+                            <StackPanel Margin="10,8,10,9">
+                                <TextBlock Text="{Binding FileName}"
+                                           Foreground="{StaticResource Brush.TextPrimary}"
+                                           FontSize="12"
+                                           TextTrimming="CharacterEllipsis" />
+                                <TextBlock Text="{Binding TimeText}"
+                                           Foreground="{StaticResource Brush.TextTertiary}"
+                                           FontSize="11"
+                                           Margin="0,2,0,0" />
+                            </StackPanel>
+                        </StackPanel>
+                    </DataTemplate>
+                </ListBox.ItemTemplate>
+            </ListBox>
+
+            <!-- Rubber-band marquee overlay; never eats mouse input itself. -->
+            <Canvas Name="MarqueeCanvas" IsHitTestVisible="False" ClipToBounds="True">
+                <Rectangle Name="MarqueeRect"
+                           Visibility="Collapsed"
+                           Fill="#330078D4"
+                           Stroke="{StaticResource Brush.Accent}"
+                           StrokeThickness="1" />
+            </Canvas>
+
+            <TextBlock Name="EmptyState"
+                       Text="No captures yet. Use the tray icon or control panel to take one."
+                       Foreground="{StaticResource Brush.TextTertiary}"
+                       FontSize="14"
+                       HorizontalAlignment="Center"
+                       VerticalAlignment="Top"
+                       Margin="0,60,0,0"
+                       Visibility="Collapsed" />
+        </Grid>
+    </Grid>
+</Window>
