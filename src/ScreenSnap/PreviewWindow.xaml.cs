@@ -20,6 +20,8 @@ using ColorConverter = System.Windows.Media.ColorConverter;
 using WpfShape = System.Windows.Shapes.Shape;
 using WpfPath = System.Windows.Shapes.Path;
 using WpfRectangle = System.Windows.Shapes.Rectangle;
+using WpfEllipse = System.Windows.Shapes.Ellipse;
+using WpfPolygon = System.Windows.Shapes.Polygon;
 
 namespace ScreenSnap;
 
@@ -29,14 +31,14 @@ public partial class PreviewWindow : Window
     private readonly string _savedPath;
 
     private enum Tool { Select, Arrow, Rectangle, Text }
-    private enum Manip { None, Resize, Rotate }
+    private enum Manip { None, Resize, Rotate, Endpoint }
 
     private Tool _tool = Tool.Select;
 
     private MediaBrush _color = MediaBrushes.Red;
-    private double _thickness = 3;
+    private double _thickness = 5;
     private double _fontSize = 20;
-    private FontFamily _fontFamily = new("Segoe UI");
+    private FontFamily _fontFamily = new("Bebas Neue");
 
     private readonly List<UIElement> _annotations = new();
     private readonly Dictionary<WpfPath, (Point from, Point to)> _arrowPoints = new();
@@ -51,24 +53,37 @@ public partial class PreviewWindow : Window
     private Point _start;
     private WpfShape? _active;
 
-    // Selection + move.
-    private UIElement? _selected;
+    // Drag-to-size a text box (its height becomes the font size).
+    private bool _textDragging;
+    private WpfRectangle? _textPreview;
+
+    // Selection (0, 1, or many) + move.
+    private readonly List<UIElement> _selection = new();
     private bool _movingBody;
     private Point _lastMove;
 
-    // Resize / rotate via handles.
+    private UIElement? _pendingHit;
+
+    // Rubber-band selection.
+    private bool _marqueeing;
+    private WpfRectangle? _marquee;
+
+    // Resize / rotate / endpoint handles (single selection only).
     private Manip _manip = Manip.None;
     private Matrix _m0;
     private Point _anchorLocal;
     private Point _cornerLocal;
     private Point _rotCenter;
     private double _rotStartAngle;
+    private int _endpointIndex;
 
-    // Selection overlay.
-    private readonly System.Windows.Shapes.Polygon _outline;
+    // Overlay visuals.
+    private readonly WpfPolygon _outline;
     private readonly WpfRectangle[] _cornerHandles = new WpfRectangle[4];
-    private readonly System.Windows.Shapes.Ellipse _rotateHandle;
-    private readonly List<UIElement> _overlay = new();
+    private readonly WpfEllipse _rotateHandle;
+    private readonly WpfEllipse[] _endpointHandles = new WpfEllipse[2];
+    private readonly List<UIElement> _fixedHandles = new();
+    private readonly List<WpfPolygon> _multiOutlines = new();
 
     private TextBox? _activeText;
 
@@ -88,7 +103,7 @@ public partial class PreviewWindow : Window
 
         var accent = (MediaBrush)System.Windows.Application.Current.Resources["Brush.Accent"];
 
-        _outline = new System.Windows.Shapes.Polygon
+        _outline = new WpfPolygon
         {
             Stroke = accent,
             StrokeThickness = 1,
@@ -96,7 +111,7 @@ public partial class PreviewWindow : Window
             Fill = MediaBrushes.Transparent,
             IsHitTestVisible = false,
         };
-        AddOverlay(_outline);
+        AddFixedHandle(_outline);
 
         var cursors = new[] { Cursors.SizeNWSE, Cursors.SizeNESW, Cursors.SizeNWSE, Cursors.SizeNESW };
         for (int i = 0; i < 4; i++)
@@ -115,10 +130,10 @@ public partial class PreviewWindow : Window
             handle.MouseMove += Handle_MouseMove;
             handle.MouseLeftButtonUp += Handle_MouseUp;
             _cornerHandles[i] = handle;
-            AddOverlay(handle);
+            AddFixedHandle(handle);
         }
 
-        _rotateHandle = new System.Windows.Shapes.Ellipse
+        _rotateHandle = new WpfEllipse
         {
             Width = HandleSize + 2,
             Height = HandleSize + 2,
@@ -130,24 +145,49 @@ public partial class PreviewWindow : Window
         _rotateHandle.MouseLeftButtonDown += Handle_MouseDown;
         _rotateHandle.MouseMove += Handle_MouseMove;
         _rotateHandle.MouseLeftButtonUp += Handle_MouseUp;
-        AddOverlay(_rotateHandle);
+        AddFixedHandle(_rotateHandle);
 
-        _toolButtons = new List<ToggleButton> { SelectTool, ArrowTool, RectTool, TextTool };
+        for (int i = 0; i < 2; i++)
+        {
+            var end = new WpfEllipse
+            {
+                Width = HandleSize + 3,
+                Height = HandleSize + 3,
+                Fill = MediaBrushes.White,
+                Stroke = accent,
+                StrokeThickness = 2,
+                Cursor = Cursors.Cross,
+                Tag = i,
+            };
+            end.MouseLeftButtonDown += Handle_MouseDown;
+            end.MouseMove += Handle_MouseMove;
+            end.MouseLeftButtonUp += Handle_MouseUp;
+            _endpointHandles[i] = end;
+            AddFixedHandle(end);
+        }
+
+        if (AccentTheme.TryParse(App.Settings.DefaultColor, out var defaultColor))
+        {
+            _color = new SolidColorBrush(defaultColor);
+        }
+
+        _toolButtons = new List<ToggleButton> { RectTool, ArrowTool, TextTool, SelectTool };
         BuildSwatches();
         BuildFonts();
 
-        ThicknessCombo.SelectedIndex = 2;
-        TextSizeCombo.SelectedIndex = 2;
-        SelectTool.IsChecked = true;
-        SetOverlayVisible(false);
+        ThicknessCombo.SelectedIndex = 3; // "5"
+        TextSizeCombo.SelectedIndex = 2;  // "20"
+        RectTool.IsChecked = true;
+        HideOverlay();
         UpdatePropertyPanels();
     }
 
-    private void AddOverlay(UIElement element)
+    private void AddFixedHandle(UIElement element)
     {
         Panel.SetZIndex(element, 10000);
+        element.Visibility = Visibility.Collapsed;
         AnnotationCanvas.Children.Add(element);
-        _overlay.Add(element);
+        _fixedHandles.Add(element);
     }
 
     public static PreviewWindow FromFile(string path)
@@ -171,11 +211,17 @@ public partial class PreviewWindow : Window
         return image;
     }
 
+    private bool IsArrow(UIElement? el) => el is WpfPath p && _arrowPoints.ContainsKey(p);
+
     // --- Toolbar / palette ---
 
     private void BuildSwatches()
     {
-        string[] hexes = { "#E81123", "#FFB900", "#16C60C", "#0078D4", "#000000", "#FFFFFF" };
+        string[] hexes =
+        {
+            "#E81123", "#FF8C00", "#FFB900", "#16C60C",
+            "#0078D4", "#8E44AD", "#000000", "#FFFFFF",
+        };
 
         foreach (var hex in hexes)
         {
@@ -206,12 +252,12 @@ public partial class PreviewWindow : Window
 
     private void BuildFonts()
     {
-        string[] fonts = { "Segoe UI", "Arial", "Calibri", "Times New Roman", "Georgia", "Verdana", "Consolas", "Comic Sans MS", "Impact", "Courier New" };
+        string[] fonts = { "Segoe UI", "Arial", "Bebas Neue", "Calibri", "Times New Roman", "Georgia", "Verdana", "Consolas", "Comic Sans MS", "Impact", "Courier New" };
         foreach (var name in fonts)
         {
             FontCombo.Items.Add(new ComboBoxItem { Content = name, FontFamily = new FontFamily(name) });
         }
-        FontCombo.SelectedIndex = 0;
+        SelectFont(_fontFamily);
     }
 
     private void Swatch_Click(object sender, MouseButtonEventArgs e)
@@ -226,14 +272,23 @@ public partial class PreviewWindow : Window
         }
 
         _color = brush;
-        if (_selected is WpfShape shape)
+        foreach (var el in _selection)
         {
-            shape.Stroke = brush;
-            _dirty = true;
+            if (el is WpfShape shape)
+            {
+                shape.Stroke = brush;
+                if (shape is WpfPath)
+                {
+                    shape.Fill = brush;
+                }
+            }
+            else if (el is TextBlock text)
+            {
+                text.Foreground = brush;
+            }
         }
-        else if (_selected is TextBlock text)
+        if (_selection.Count > 0)
         {
-            text.Foreground = brush;
             _dirty = true;
         }
     }
@@ -291,7 +346,7 @@ public partial class PreviewWindow : Window
         CommitActiveText();
         if (_tool != Tool.Select)
         {
-            Select(null);
+            SelectOnly(null);
         }
         UpdatePropertyPanels();
     }
@@ -306,17 +361,16 @@ public partial class PreviewWindow : Window
         if (_toolButtons.All(b => b.IsChecked != true))
         {
             _updatingToggles = true;
-            SelectTool.IsChecked = true;
+            ((ToggleButton)sender).IsChecked = true;
             _updatingToggles = false;
-            _tool = Tool.Select;
-            UpdatePropertyPanels();
         }
     }
 
     private void UpdatePropertyPanels()
     {
-        bool textCtx = _selected is TextBlock || (_selected is null && _tool == Tool.Text);
-        bool shapeCtx = _selected is WpfShape || (_selected is null && _tool is Tool.Arrow or Tool.Rectangle);
+        UIElement? primary = _selection.Count == 1 ? _selection[0] : null;
+        bool textCtx = primary is TextBlock || (_selection.Count == 0 && _tool == Tool.Text);
+        bool shapeCtx = primary is WpfShape || (_selection.Count == 0 && _tool is Tool.Arrow or Tool.Rectangle);
 
         ShapeGroup.Visibility = shapeCtx ? Visibility.Visible : Visibility.Collapsed;
         TextGroup.Visibility = textCtx ? Visibility.Visible : Visibility.Collapsed;
@@ -331,18 +385,21 @@ public partial class PreviewWindow : Window
         }
 
         _thickness = value;
-        if (_selected is WpfPath path && _arrowPoints.TryGetValue(path, out var pts))
+        foreach (var el in _selection)
         {
-            path.StrokeThickness = value;
-            path.Data = BuildArrow(pts.from, pts.to, value);
-            _dirty = true;
-            UpdateSelectionOverlay();
+            if (el is WpfPath path && _arrowPoints.TryGetValue(path, out var pts))
+            {
+                path.StrokeThickness = value;
+                path.Data = BuildArrow(pts.from, pts.to, value);
+                _dirty = true;
+            }
+            else if (el is WpfShape shape)
+            {
+                shape.StrokeThickness = value;
+                _dirty = true;
+            }
         }
-        else if (_selected is WpfShape shape)
-        {
-            shape.StrokeThickness = value;
-            _dirty = true;
-        }
+        UpdateSelectionOverlay();
     }
 
     private void Font_Changed(object sender, SelectionChangedEventArgs e)
@@ -353,12 +410,15 @@ public partial class PreviewWindow : Window
         }
 
         _fontFamily = new FontFamily((string)item.Content);
-        if (_selected is TextBlock text)
+        foreach (var el in _selection)
         {
-            text.FontFamily = _fontFamily;
-            _dirty = true;
-            UpdateSelectionOverlay();
+            if (el is TextBlock text)
+            {
+                text.FontFamily = _fontFamily;
+                _dirty = true;
+            }
         }
+        UpdateSelectionOverlay();
     }
 
     private void TextSize_Changed(object sender, SelectionChangedEventArgs e)
@@ -370,12 +430,15 @@ public partial class PreviewWindow : Window
         }
 
         _fontSize = value;
-        if (_selected is TextBlock text)
+        foreach (var el in _selection)
         {
-            text.FontSize = value;
-            _dirty = true;
-            UpdateSelectionOverlay();
+            if (el is TextBlock text)
+            {
+                text.FontSize = value;
+                _dirty = true;
+            }
         }
+        UpdateSelectionOverlay();
     }
 
     private void Undo_Click(object sender, RoutedEventArgs e)
@@ -387,22 +450,36 @@ public partial class PreviewWindow : Window
         }
 
         var last = _annotations[^1];
-        if (ReferenceEquals(last, _selected))
-        {
-            Select(null);
-        }
+        _selection.Remove(last);
         RemoveAnnotation(last);
         _dirty = true;
+        UpdateSelectionOverlay();
+        UpdatePropertyPanels();
     }
 
     private void Delete_Click(object sender, RoutedEventArgs e) => DeleteSelected();
 
     protected override void OnKeyDown(KeyEventArgs e)
     {
-        if (e.Key == Key.Delete && _selected is not null && _activeText is null)
+        bool typing = _activeText is not null || Keyboard.FocusedElement is TextBox;
+        bool plain = (Keyboard.Modifiers & (ModifierKeys.Control | ModifierKeys.Alt)) == 0;
+
+        if (!typing)
         {
-            DeleteSelected();
-            e.Handled = true;
+            if (e.Key == Key.Z && (Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control)
+            {
+                Undo_Click(this, new RoutedEventArgs());
+                e.Handled = true;
+            }
+            else if (e.Key == Key.Delete && _selection.Count > 0)
+            {
+                DeleteSelected();
+                e.Handled = true;
+            }
+            else if (plain && e.Key == Key.R) { RectTool.IsChecked = true; e.Handled = true; }
+            else if (plain && e.Key == Key.A) { ArrowTool.IsChecked = true; e.Handled = true; }
+            else if (plain && e.Key == Key.T) { TextTool.IsChecked = true; e.Handled = true; }
+            else if (plain && e.Key == Key.V) { SelectTool.IsChecked = true; e.Handled = true; }
         }
 
         base.OnKeyDown(e);
@@ -410,15 +487,33 @@ public partial class PreviewWindow : Window
 
     private void DeleteSelected()
     {
-        if (_selected is null)
+        if (_selection.Count == 0)
         {
             return;
         }
 
-        var target = _selected;
-        Select(null);
-        RemoveAnnotation(target);
+        int idx = _selection.Count == 1 ? _annotations.IndexOf(_selection[0]) : -1;
+        var targets = _selection.ToList();
+        _selection.Clear();
+        foreach (var el in targets)
+        {
+            RemoveAnnotation(el);
+        }
         _dirty = true;
+
+        // After deleting a single object, select the previous one so selection doesn't vanish.
+        if (idx >= 0 && _annotations.Count > 0)
+        {
+            int sel = Math.Min(idx > 0 ? idx - 1 : 0, _annotations.Count - 1);
+            _selection.Add(_annotations[sel]);
+        }
+
+        if (_selection.Count == 1)
+        {
+            SyncPropsToSelection(_selection[0]);
+        }
+        UpdateSelectionOverlay();
+        UpdatePropertyPanels();
     }
 
     private void RemoveAnnotation(UIElement element)
@@ -444,31 +539,76 @@ public partial class PreviewWindow : Window
     private void Canvas_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
         var p = e.GetPosition(AnnotationCanvas);
-
-        // Clicking on / near an existing object grabs it (any tool).
         var hit = HitAnnotation(p);
-        if (hit is not null)
-        {
-            Select(hit);
-            _movingBody = true;
-            _lastMove = p;
-            AnnotationCanvas.CaptureMouse();
-            return;
-        }
 
         if (_tool == Tool.Select)
         {
-            Select(null);
-            return;
-        }
-
-        if (_tool == Tool.Text)
-        {
-            BeginText(p);
+            AnnotationCanvas.CaptureMouse();
+            if (hit is not null)
+            {
+                // Keep a multi-selection if you press one of its members; else select just this.
+                if (!_selection.Contains(hit))
+                {
+                    SelectOnly(hit);
+                }
+                _movingBody = true;
+                _lastMove = p;
+            }
+            else
+            {
+                _start = p;
+                _marqueeing = true;
+                var accent = (SolidColorBrush)System.Windows.Application.Current.Resources["Brush.Accent"];
+                _marquee = new WpfRectangle
+                {
+                    Stroke = accent,
+                    StrokeThickness = 1,
+                    StrokeDashArray = new DoubleCollection { 4, 2 },
+                    Fill = new SolidColorBrush(MediaColor.FromArgb(0x33, accent.Color.R, accent.Color.G, accent.Color.B)),
+                    IsHitTestVisible = false,
+                };
+                Panel.SetZIndex(_marquee, 10000);
+                Canvas.SetLeft(_marquee, p.X);
+                Canvas.SetTop(_marquee, p.Y);
+                AnnotationCanvas.Children.Add(_marquee);
+            }
             return;
         }
 
         _start = p;
+        AnnotationCanvas.CaptureMouse();
+
+        if (hit is not null)
+        {
+            _pendingHit = hit;
+            return;
+        }
+
+        BeginDraw(p);
+    }
+
+    private void BeginDraw(Point start)
+    {
+        _start = start;
+
+        if (_tool == Tool.Text)
+        {
+            _textDragging = true;
+            _textPreview = new WpfRectangle
+            {
+                Stroke = (MediaBrush)System.Windows.Application.Current.Resources["Brush.Accent"],
+                StrokeThickness = 1,
+                StrokeDashArray = new DoubleCollection { 3, 2 },
+                Fill = MediaBrushes.Transparent,
+                IsHitTestVisible = false,
+            };
+            Panel.SetZIndex(_textPreview, 10000);
+            Canvas.SetLeft(_textPreview, start.X);
+            Canvas.SetTop(_textPreview, start.Y);
+            AnnotationCanvas.Children.Add(_textPreview);
+            return;
+        }
+
         _drawing = true;
 
         if (_tool == Tool.Rectangle)
@@ -487,6 +627,7 @@ public partial class PreviewWindow : Window
             var path = new WpfPath
             {
                 Stroke = _color,
+                Fill = _color,
                 StrokeThickness = _thickness,
                 StrokeStartLineCap = PenLineCap.Round,
                 StrokeEndLineCap = PenLineCap.Round,
@@ -495,22 +636,53 @@ public partial class PreviewWindow : Window
             AddAnnotation(path);
             _active = path;
         }
-
-        AnnotationCanvas.CaptureMouse();
     }
 
     private void Canvas_MouseMove(object sender, MouseEventArgs e)
     {
         var p = e.GetPosition(AnnotationCanvas);
 
-        if (_movingBody && _selected is not null)
+        if (_movingBody && _selection.Count > 0)
         {
-            var m = ElemMatrix(_selected);
-            m.Translate(p.X - _lastMove.X, p.Y - _lastMove.Y);
-            SetElemMatrix(_selected, m);
+            double dx = p.X - _lastMove.X;
+            double dy = p.Y - _lastMove.Y;
+            foreach (var el in _selection)
+            {
+                var m = ElemMatrix(el);
+                m.Translate(dx, dy);
+                SetElemMatrix(el, m);
+            }
             _lastMove = p;
             UpdateSelectionOverlay();
             _dirty = true;
+            return;
+        }
+
+        if (_marqueeing && _marquee is not null)
+        {
+            Canvas.SetLeft(_marquee, Math.Min(_start.X, p.X));
+            Canvas.SetTop(_marquee, Math.Min(_start.Y, p.Y));
+            _marquee.Width = Math.Abs(p.X - _start.X);
+            _marquee.Height = Math.Abs(p.Y - _start.Y);
+            return;
+        }
+
+        if (_pendingHit is not null)
+        {
+            if ((p - _start).Length < HitTolerance)
+            {
+                return;
+            }
+            _pendingHit = null;
+            BeginDraw(_start);
+        }
+
+        if (_textDragging && _textPreview is not null)
+        {
+            Canvas.SetLeft(_textPreview, Math.Min(_start.X, p.X));
+            Canvas.SetTop(_textPreview, Math.Min(_start.Y, p.Y));
+            _textPreview.Width = Math.Abs(p.X - _start.X);
+            _textPreview.Height = Math.Abs(p.Y - _start.Y);
             return;
         }
 
@@ -542,6 +714,61 @@ public partial class PreviewWindow : Window
             return;
         }
 
+        if (_marqueeing)
+        {
+            _marqueeing = false;
+            AnnotationCanvas.ReleaseMouseCapture();
+
+            var up = e.GetPosition(AnnotationCanvas);
+            var box = new Rect(
+                new Point(Math.Min(_start.X, up.X), Math.Min(_start.Y, up.Y)),
+                new Point(Math.Max(_start.X, up.X), Math.Max(_start.Y, up.Y)));
+
+            if (_marquee is not null)
+            {
+                AnnotationCanvas.Children.Remove(_marquee);
+                _marquee = null;
+            }
+
+            // Select every object the box touches.
+            var picked = _annotations.Where(a => box.IntersectsWith(AnnotationBounds(a))).ToList();
+            SelectMany(picked);
+            return;
+        }
+
+        if (_pendingHit is not null)
+        {
+            var target = _pendingHit;
+            _pendingHit = null;
+            AnnotationCanvas.ReleaseMouseCapture();
+            SelectOnly(target);
+            return;
+        }
+
+        if (_textDragging)
+        {
+            _textDragging = false;
+            AnnotationCanvas.ReleaseMouseCapture();
+            if (_textPreview is not null)
+            {
+                AnnotationCanvas.Children.Remove(_textPreview);
+                _textPreview = null;
+            }
+
+            var upPos = e.GetPosition(AnnotationCanvas);
+            double height = Math.Abs(upPos.Y - _start.Y);
+            if (height >= 8)
+            {
+                var topLeft = new Point(Math.Min(_start.X, upPos.X), Math.Min(_start.Y, upPos.Y));
+                BeginText(topLeft, height);
+            }
+            else
+            {
+                BeginText(_start, _fontSize);
+            }
+            return;
+        }
+
         if (!_drawing)
         {
             return;
@@ -564,9 +791,13 @@ public partial class PreviewWindow : Window
         {
             RemoveAnnotation(_active);
         }
-        else if (_active is WpfPath path)
+        else
         {
-            _arrowPoints[path] = (_start, end);
+            if (_active is WpfPath path)
+            {
+                _arrowPoints[path] = (_start, end);
+            }
+            SelectOnly(_active); // auto-select the freshly drawn object
         }
 
         _active = null;
@@ -606,14 +837,27 @@ public partial class PreviewWindow : Window
         return null;
     }
 
-    // --- Selection + resize/rotate handles ---
+    // --- Selection ---
 
-    private void Select(UIElement? element)
+    private void SelectOnly(UIElement? element)
     {
-        _selected = element;
+        _selection.Clear();
         if (element is not null)
         {
+            _selection.Add(element);
             SyncPropsToSelection(element);
+        }
+        UpdateSelectionOverlay();
+        UpdatePropertyPanels();
+    }
+
+    private void SelectMany(List<UIElement> elements)
+    {
+        _selection.Clear();
+        _selection.AddRange(elements);
+        if (_selection.Count == 1)
+        {
+            SyncPropsToSelection(_selection[0]);
         }
         UpdateSelectionOverlay();
         UpdatePropertyPanels();
@@ -638,29 +882,102 @@ public partial class PreviewWindow : Window
         };
     }
 
+    private Rect AnnotationBounds(UIElement el)
+    {
+        var m = ElemMatrix(el);
+        var corners = LocalCorners(el);
+        var p0 = m.Transform(corners[0]);
+        double minX = p0.X, minY = p0.Y, maxX = p0.X, maxY = p0.Y;
+        for (int i = 1; i < corners.Length; i++)
+        {
+            var q = m.Transform(corners[i]);
+            minX = Math.Min(minX, q.X);
+            minY = Math.Min(minY, q.Y);
+            maxX = Math.Max(maxX, q.X);
+            maxY = Math.Max(maxY, q.Y);
+        }
+        return new Rect(minX, minY, maxX - minX, maxY - minY);
+    }
+
+    private void HideOverlay()
+    {
+        foreach (var h in _fixedHandles)
+        {
+            h.Visibility = Visibility.Collapsed;
+        }
+        foreach (var o in _multiOutlines)
+        {
+            AnnotationCanvas.Children.Remove(o);
+        }
+        _multiOutlines.Clear();
+    }
+
     private void UpdateSelectionOverlay()
     {
-        if (_selected is null)
+        HideOverlay();
+
+        if (_selection.Count == 0)
         {
-            SetOverlayVisible(false);
             return;
         }
 
-        var m = ElemMatrix(_selected);
-        var local = LocalCorners(_selected);
+        if (_selection.Count == 1)
+        {
+            var el = _selection[0];
+            if (IsArrow(el))
+            {
+                ShowArrowHandles((WpfPath)el);
+            }
+            else
+            {
+                ShowBoxHandles(el);
+            }
+        }
+        else
+        {
+            var accent = (MediaBrush)System.Windows.Application.Current.Resources["Brush.Accent"];
+            foreach (var el in _selection)
+            {
+                var m = ElemMatrix(el);
+                var c = LocalCorners(el);
+                var poly = new WpfPolygon
+                {
+                    Stroke = accent,
+                    StrokeThickness = 1,
+                    StrokeDashArray = new DoubleCollection { 3, 2 },
+                    Fill = MediaBrushes.Transparent,
+                    IsHitTestVisible = false,
+                    Points = new PointCollection { m.Transform(c[0]), m.Transform(c[1]), m.Transform(c[2]), m.Transform(c[3]) },
+                };
+                Panel.SetZIndex(poly, 10000);
+                AnnotationCanvas.Children.Add(poly);
+                _multiOutlines.Add(poly);
+            }
+        }
+    }
+
+    private void ShowBoxHandles(UIElement el)
+    {
+        var m = ElemMatrix(el);
+        var local = LocalCorners(el);
         var c0 = m.Transform(local[0]);
         var c1 = m.Transform(local[1]);
         var c2 = m.Transform(local[2]);
         var c3 = m.Transform(local[3]);
 
         _outline.Points = new PointCollection { c0, c1, c2, c3 };
+        _outline.Visibility = Visibility.Visible;
 
         PlaceHandle(_cornerHandles[0], c0);
         PlaceHandle(_cornerHandles[1], c1);
         PlaceHandle(_cornerHandles[2], c2);
         PlaceHandle(_cornerHandles[3], c3);
+        foreach (var h in _cornerHandles)
+        {
+            h.Visibility = Visibility.Visible;
+        }
 
-        var lb = LocalBounds(_selected);
+        var lb = LocalBounds(el);
         var center = m.Transform(new Point((lb.Left + lb.Right) / 2, (lb.Top + lb.Bottom) / 2));
         var topMid = new Point((c0.X + c1.X) / 2, (c0.Y + c1.Y) / 2);
         var dir = topMid - center;
@@ -669,10 +986,18 @@ public partial class PreviewWindow : Window
         {
             dir /= dist;
         }
-        var rotatePos = topMid + dir * 22;
-        PlaceHandle(_rotateHandle, rotatePos);
+        PlaceHandle(_rotateHandle, topMid + dir * 22);
+        _rotateHandle.Visibility = Visibility.Visible;
+    }
 
-        SetOverlayVisible(true);
+    private void ShowArrowHandles(WpfPath path)
+    {
+        var m = ElemMatrix(path);
+        var pts = _arrowPoints[path];
+        PlaceHandle(_endpointHandles[0], m.Transform(pts.from));
+        PlaceHandle(_endpointHandles[1], m.Transform(pts.to));
+        _endpointHandles[0].Visibility = Visibility.Visible;
+        _endpointHandles[1].Visibility = Visibility.Visible;
     }
 
     private static void PlaceHandle(FrameworkElement handle, Point center)
@@ -681,29 +1006,25 @@ public partial class PreviewWindow : Window
         Canvas.SetTop(handle, center.Y - handle.Height / 2);
     }
 
-    private void SetOverlayVisible(bool visible)
-    {
-        foreach (var el in _overlay)
-        {
-            el.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
-        }
-    }
-
     private void Handle_MouseDown(object sender, MouseButtonEventArgs e)
     {
-        if (_selected is null)
+        if (_selection.Count != 1)
         {
             return;
         }
 
         var handle = (FrameworkElement)sender;
-        _m0 = ElemMatrix(_selected);
-        var local = LocalCorners(_selected);
+        _m0 = ElemMatrix(_selection[0]);
 
-        if (ReferenceEquals(handle, _rotateHandle))
+        if (ReferenceEquals(handle, _endpointHandles[0]) || ReferenceEquals(handle, _endpointHandles[1]))
+        {
+            _manip = Manip.Endpoint;
+            _endpointIndex = (int)handle.Tag;
+        }
+        else if (ReferenceEquals(handle, _rotateHandle))
         {
             _manip = Manip.Rotate;
-            var lb = LocalBounds(_selected);
+            var lb = LocalBounds(_selection[0]);
             _rotCenter = _m0.Transform(new Point((lb.Left + lb.Right) / 2, (lb.Top + lb.Bottom) / 2));
             var mp = e.GetPosition(AnnotationCanvas);
             _rotStartAngle = Math.Atan2(mp.Y - _rotCenter.Y, mp.X - _rotCenter.X);
@@ -711,6 +1032,7 @@ public partial class PreviewWindow : Window
         else
         {
             _manip = Manip.Resize;
+            var local = LocalCorners(_selection[0]);
             int i = (int)handle.Tag;
             _cornerLocal = local[i];
             _anchorLocal = local[(i + 2) % 4];
@@ -722,19 +1044,17 @@ public partial class PreviewWindow : Window
 
     private void Handle_MouseMove(object sender, MouseEventArgs e)
     {
-        if (_manip == Manip.None || _selected is null)
+        if (_manip == Manip.None || _selection.Count != 1)
         {
             return;
         }
 
         var p = e.GetPosition(AnnotationCanvas);
-        if (_manip == Manip.Resize)
+        switch (_manip)
         {
-            ApplyResize(p);
-        }
-        else
-        {
-            ApplyRotate(p);
+            case Manip.Resize: ApplyResize(p); break;
+            case Manip.Rotate: ApplyRotate(p); break;
+            case Manip.Endpoint: ApplyEndpoint(p); break;
         }
 
         UpdateSelectionOverlay();
@@ -754,6 +1074,30 @@ public partial class PreviewWindow : Window
         e.Handled = true;
     }
 
+    private void ApplyEndpoint(Point mouseCanvas)
+    {
+        var path = (WpfPath)_selection[0];
+        var inv = _m0;
+        if (!inv.HasInverse)
+        {
+            return;
+        }
+        inv.Invert();
+        var local = inv.Transform(mouseCanvas);
+
+        var pts = _arrowPoints[path];
+        if (_endpointIndex == 0)
+        {
+            pts.from = local;
+        }
+        else
+        {
+            pts.to = local;
+        }
+        _arrowPoints[path] = pts;
+        path.Data = BuildArrow(pts.from, pts.to, path.StrokeThickness);
+    }
+
     private void ApplyResize(Point mouseCanvas)
     {
         var inv = _m0;
@@ -771,7 +1115,6 @@ public partial class PreviewWindow : Window
         sx = Math.Max(0.05, sx);
         sy = Math.Max(0.05, sy);
 
-        // Hold Shift to keep the aspect ratio (uniform scale).
         if ((Keyboard.Modifiers & ModifierKeys.Shift) == ModifierKeys.Shift)
         {
             double uniform = Math.Max(sx, sy);
@@ -781,7 +1124,7 @@ public partial class PreviewWindow : Window
 
         var s = Matrix.Identity;
         s.ScaleAt(sx, sy, _anchorLocal.X, _anchorLocal.Y);
-        SetElemMatrix(_selected!, Matrix.Multiply(s, _m0));
+        SetElemMatrix(_selection[0], Matrix.Multiply(s, _m0));
     }
 
     private void ApplyRotate(Point mouseCanvas)
@@ -791,7 +1134,7 @@ public partial class PreviewWindow : Window
 
         var r = Matrix.Identity;
         r.RotateAt(deltaDeg, _rotCenter.X, _rotCenter.Y);
-        SetElemMatrix(_selected!, Matrix.Multiply(_m0, r));
+        SetElemMatrix(_selection[0], Matrix.Multiply(_m0, r));
     }
 
     private void SyncPropsToSelection(UIElement element)
@@ -837,25 +1180,32 @@ public partial class PreviewWindow : Window
         }
     }
 
+    // A line shaft with a solid, filled triangular head.
     private static Geometry BuildArrow(Point from, Point to, double thickness)
     {
         var geometry = new StreamGeometry();
         using (var ctx = geometry.Open())
         {
+            var delta = to - from;
+            double dist = delta.Length;
+            if (dist < 0.001)
+            {
+                geometry.Freeze();
+                return geometry;
+            }
+
+            var dir = delta / dist;
+            var perp = new Vector(-dir.Y, dir.X);
+            double headLen = Math.Min(Math.Max(14, thickness * 3.5), dist);
+            double halfWidth = headLen * 0.55;
+            var basePoint = to - dir * headLen;
+
             ctx.BeginFigure(from, false, false);
-            ctx.LineTo(to, true, false);
+            ctx.LineTo(basePoint, true, false);
 
-            double angle = Math.Atan2(to.Y - from.Y, to.X - from.X);
-            double len = Math.Min(Math.Max(12, thickness * 4), (to - from).Length * 0.5);
-            const double spread = 0.45;
-
-            var h1 = new Point(to.X - len * Math.Cos(angle - spread), to.Y - len * Math.Sin(angle - spread));
-            var h2 = new Point(to.X - len * Math.Cos(angle + spread), to.Y - len * Math.Sin(angle + spread));
-
-            ctx.BeginFigure(to, false, false);
-            ctx.LineTo(h1, true, false);
-            ctx.BeginFigure(to, false, false);
-            ctx.LineTo(h2, true, false);
+            ctx.BeginFigure(to, true, true);
+            ctx.LineTo(basePoint + perp * halfWidth, true, false);
+            ctx.LineTo(basePoint - perp * halfWidth, true, false);
         }
 
         geometry.Freeze();
@@ -864,7 +1214,7 @@ public partial class PreviewWindow : Window
 
     // --- Text ---
 
-    private void BeginText(Point p)
+    private void BeginText(Point p, double fontSize)
     {
         CommitActiveText();
 
@@ -876,7 +1226,7 @@ public partial class PreviewWindow : Window
             CaretBrush = _color,
             BorderBrush = (MediaBrush)System.Windows.Application.Current.Resources["Brush.Accent"],
             BorderThickness = new Thickness(1),
-            FontSize = _fontSize,
+            FontSize = Math.Max(8, fontSize),
             FontWeight = FontWeights.Bold,
             FontFamily = _fontFamily,
         };
@@ -943,6 +1293,8 @@ public partial class PreviewWindow : Window
         };
         AddAnnotation(label);
         SetElemMatrix(label, new Matrix(1, 0, 0, 1, x + 3, y + 2));
+        label.UpdateLayout();
+        SelectOnly(label);
     }
 
     // --- Output ---
@@ -951,7 +1303,7 @@ public partial class PreviewWindow : Window
     {
         CommitActiveText();
 
-        SetOverlayVisible(false); // never bake the selection handles in
+        HideOverlay();
         EditorSurface.UpdateLayout();
 
         double w = EditorSurface.ActualWidth;
@@ -970,10 +1322,7 @@ public partial class PreviewWindow : Window
             result = target;
         }
 
-        if (_selected is not null)
-        {
-            UpdateSelectionOverlay();
-        }
+        UpdateSelectionOverlay();
         return result;
     }
 

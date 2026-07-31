@@ -12,8 +12,9 @@
     <Window.Resources>
         <Style x:Key="ToolToggle" TargetType="ToggleButton">
             <Setter Property="Foreground" Value="{StaticResource Brush.TextPrimary}" />
-            <Setter Property="Padding" Value="12,6" />
-            <Setter Property="Margin" Value="0,0,6,0" />
+            <Setter Property="Padding" Value="12,7" />
+            <Setter Property="Margin" Value="0,0,0,6" />
+            <Setter Property="HorizontalAlignment" Value="Stretch" />
             <Setter Property="Cursor" Value="Hand" />
             <Setter Property="Template">
                 <Setter.Value>
@@ -22,7 +23,7 @@
                                 Background="{StaticResource Brush.Subtle}"
                                 CornerRadius="4"
                                 Padding="{TemplateBinding Padding}">
-                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                            <ContentPresenter HorizontalAlignment="Left" VerticalAlignment="Center" />
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
@@ -37,90 +38,78 @@
                 </Setter.Value>
             </Setter>
         </Style>
+
+        <Style x:Key="PropLabel" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="{StaticResource Brush.TextSecondary}" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="Margin" Value="2,0,0,4" />
+        </Style>
     </Window.Resources>
 
     <Border Background="{StaticResource Brush.App}"
             Padding="14">
-        <StackPanel>
-            <!-- Tools -->
-            <StackPanel Orientation="Horizontal" Margin="0,0,0,10" VerticalAlignment="Center">
-                <ToggleButton Name="SelectTool" Content="⭶ Select" Style="{StaticResource ToolToggle}"
-                              Tag="Select" Checked="Tool_Checked" Unchecked="Tool_Unchecked" />
-                <ToggleButton Name="ArrowTool" Content="↗ Arrow" Style="{StaticResource ToolToggle}"
-                              Tag="Arrow" Checked="Tool_Checked" Unchecked="Tool_Unchecked" />
-                <ToggleButton Name="RectTool" Content="▭ Rectangle" Style="{StaticResource ToolToggle}"
+        <DockPanel>
+            <!-- Left toolbar -->
+            <StackPanel DockPanel.Dock="Left" Width="158" Margin="0,0,14,0">
+                <ToggleButton Name="RectTool" Content="▭  Rectangle" Style="{StaticResource ToolToggle}"
                               Tag="Rectangle" Checked="Tool_Checked" Unchecked="Tool_Unchecked" />
-                <ToggleButton Name="TextTool" Content="A Text" Style="{StaticResource ToolToggle}"
+                <ToggleButton Name="ArrowTool" Content="↗  Arrow" Style="{StaticResource ToolToggle}"
+                              Tag="Arrow" Checked="Tool_Checked" Unchecked="Tool_Unchecked" />
+                <ToggleButton Name="TextTool" Content="A  Text" Style="{StaticResource ToolToggle}"
                               Tag="Text" Checked="Tool_Checked" Unchecked="Tool_Unchecked" />
+                <ToggleButton Name="SelectTool" Content="⭶  Select" Style="{StaticResource ToolToggle}"
+                              Tag="Select" Checked="Tool_Checked" Unchecked="Tool_Unchecked" />
 
-                <Border Width="1" Background="{StaticResource Brush.Stroke}" Margin="6,2,10,2" />
+                <Border Height="1" Background="{StaticResource Brush.Stroke}" Margin="0,6,0,10" />
 
-                <Button Name="DeleteButton" Content="🗑 Delete" Click="Delete_Click"
-                        Style="{StaticResource SubtleButton}" Padding="12,6" Margin="0,0,6,0" />
-                <Button Name="UndoButton" Content="⟲ Undo" Click="Undo_Click"
-                        Style="{StaticResource SubtleButton}" Padding="12,6" />
-            </StackPanel>
+                <Button Name="DeleteButton" Content="🗑  Delete" Click="Delete_Click"
+                        Style="{StaticResource SubtleButton}" Padding="12,7"
+                        HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Margin="0,0,0,6" />
+                <Button Name="UndoButton" Content="⟲  Undo" Click="Undo_Click"
+                        Style="{StaticResource SubtleButton}" Padding="12,7"
+                        HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" />
 
-            <!-- Contextual properties (fixed height so the bar doesn't jump between tools) -->
-            <StackPanel Orientation="Horizontal" Height="32" Margin="0,0,0,12" VerticalAlignment="Center">
-                <StackPanel Name="ColorGroup" Orientation="Horizontal" VerticalAlignment="Center">
-                    <TextBlock Text="Color" Foreground="{StaticResource Brush.TextSecondary}"
-                               FontSize="12" VerticalAlignment="Center" Margin="0,0,8,0" />
-                    <StackPanel Name="SwatchPanel" Orientation="Horizontal" VerticalAlignment="Center" />
+                <Border Height="1" Background="{StaticResource Brush.Stroke}" Margin="0,10,0,10" />
+
+                <StackPanel Name="ColorGroup">
+                    <TextBlock Text="Color" Style="{StaticResource PropLabel}" />
+                    <WrapPanel Name="SwatchPanel" Margin="0,0,0,4" />
                 </StackPanel>
 
-                <StackPanel Name="ShapeGroup" Orientation="Horizontal" VerticalAlignment="Center">
-                    <Border Width="1" Background="{StaticResource Brush.Stroke}" Margin="12,2,12,2" />
-                    <TextBlock Text="Thickness" Foreground="{StaticResource Brush.TextSecondary}"
-                               FontSize="12" VerticalAlignment="Center" Margin="0,0,6,0" />
-                    <ComboBox Name="ThicknessCombo" Style="{StaticResource DarkCombo}" Width="52"
-                              VerticalAlignment="Center" SelectionChanged="Thickness_Changed">
-                        <ComboBoxItem>1</ComboBoxItem>
-                        <ComboBoxItem>2</ComboBoxItem>
-                        <ComboBoxItem>3</ComboBoxItem>
-                        <ComboBoxItem>5</ComboBoxItem>
-                        <ComboBoxItem>8</ComboBoxItem>
-                    </ComboBox>
-                </StackPanel>
+                <!-- Fixed-height slot reserved for the tallest (Text) properties, so the
+                     toolbar height stays constant no matter which tool is active. -->
+                <Grid Height="120" Margin="0,10,0,0">
+                    <StackPanel Name="ShapeGroup" VerticalAlignment="Top">
+                        <TextBlock Text="Thickness" Style="{StaticResource PropLabel}" />
+                        <ComboBox Name="ThicknessCombo" Style="{StaticResource DarkCombo}"
+                                  HorizontalAlignment="Stretch" SelectionChanged="Thickness_Changed">
+                            <ComboBoxItem>1</ComboBoxItem>
+                            <ComboBoxItem>2</ComboBoxItem>
+                            <ComboBoxItem>3</ComboBoxItem>
+                            <ComboBoxItem>5</ComboBoxItem>
+                            <ComboBoxItem>8</ComboBoxItem>
+                        </ComboBox>
+                    </StackPanel>
 
-                <StackPanel Name="TextGroup" Orientation="Horizontal" VerticalAlignment="Center">
-                    <Border Width="1" Background="{StaticResource Brush.Stroke}" Margin="12,2,12,2" />
-                    <TextBlock Text="Font" Foreground="{StaticResource Brush.TextSecondary}"
-                               FontSize="12" VerticalAlignment="Center" Margin="0,0,6,0" />
-                    <ComboBox Name="FontCombo" Style="{StaticResource DarkCombo}" Width="150"
-                              VerticalAlignment="Center" SelectionChanged="Font_Changed" />
-                    <TextBlock Text="Size" Foreground="{StaticResource Brush.TextSecondary}"
-                               FontSize="12" VerticalAlignment="Center" Margin="12,0,6,0" />
-                    <ComboBox Name="TextSizeCombo" Style="{StaticResource DarkCombo}" Width="56"
-                              VerticalAlignment="Center" SelectionChanged="TextSize_Changed">
-                        <ComboBoxItem>12</ComboBoxItem>
-                        <ComboBoxItem>16</ComboBoxItem>
-                        <ComboBoxItem>20</ComboBoxItem>
-                        <ComboBoxItem>28</ComboBoxItem>
-                        <ComboBoxItem>40</ComboBoxItem>
-                    </ComboBox>
-                </StackPanel>
-            </StackPanel>
-
-            <Border CornerRadius="4"
-                    ClipToBounds="True"
-                    BorderBrush="{StaticResource Brush.Stroke}"
-                    BorderThickness="1"
-                    HorizontalAlignment="Center">
-                <Grid Name="EditorSurface">
-                    <Image Name="PreviewImage"
-                           Stretch="Uniform"
-                           MaxWidth="900"
-                           MaxHeight="600" />
-                    <Canvas Name="AnnotationCanvas"
-                            Background="Transparent"
-                            MouseLeftButtonDown="Canvas_MouseLeftButtonDown"
-                            MouseMove="Canvas_MouseMove"
-                            MouseLeftButtonUp="Canvas_MouseLeftButtonUp" />
+                    <StackPanel Name="TextGroup" VerticalAlignment="Top">
+                        <TextBlock Text="Font" Style="{StaticResource PropLabel}" />
+                        <ComboBox Name="FontCombo" Style="{StaticResource DarkCombo}"
+                                  HorizontalAlignment="Stretch" Margin="0,0,0,8" SelectionChanged="Font_Changed" />
+                        <TextBlock Text="Size" Style="{StaticResource PropLabel}" />
+                        <ComboBox Name="TextSizeCombo" Style="{StaticResource DarkCombo}"
+                                  HorizontalAlignment="Stretch" SelectionChanged="TextSize_Changed">
+                            <ComboBoxItem>12</ComboBoxItem>
+                            <ComboBoxItem>16</ComboBoxItem>
+                            <ComboBoxItem>20</ComboBoxItem>
+                            <ComboBoxItem>28</ComboBoxItem>
+                            <ComboBoxItem>40</ComboBoxItem>
+                        </ComboBox>
+                    </StackPanel>
                 </Grid>
-            </Border>
+            </StackPanel>
 
-            <Grid Margin="0,12,0,0">
+            <!-- Bottom action bar -->
+            <Grid DockPanel.Dock="Bottom" Margin="0,12,0,0">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
@@ -154,6 +143,26 @@
                             Padding="14,6" />
                 </StackPanel>
             </Grid>
-        </StackPanel>
+
+            <!-- Image + annotation surface -->
+            <Border CornerRadius="4"
+                    ClipToBounds="True"
+                    BorderBrush="{StaticResource Brush.Stroke}"
+                    BorderThickness="1"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center">
+                <Grid Name="EditorSurface">
+                    <Image Name="PreviewImage"
+                           Stretch="Uniform"
+                           MaxWidth="820"
+                           MaxHeight="600" />
+                    <Canvas Name="AnnotationCanvas"
+                            Background="Transparent"
+                            MouseLeftButtonDown="Canvas_MouseLeftButtonDown"
+                            MouseMove="Canvas_MouseMove"
+                            MouseLeftButtonUp="Canvas_MouseLeftButtonUp" />
+                </Grid>
+            </Border>
+        </DockPanel>
     </Border>
 </Window>

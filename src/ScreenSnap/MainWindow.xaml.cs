@@ -1,6 +1,12 @@
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
+using System.Windows.Media;
 using ScreenSnap.Native;
+using Color = System.Windows.Media.Color;
+using Brush = System.Windows.Media.Brush;
+using Brushes = System.Windows.Media.Brushes;
+using ColorConverter = System.Windows.Media.ColorConverter;
 
 namespace ScreenSnap;
 
@@ -19,6 +25,61 @@ public partial class MainWindow : Window
         UpdateFolderPath();
         InitHotKeyPicker();
         AccentHexInput.Text = AccentTheme.ToHex(AccentTheme.Current);
+        BuildPenColors();
+    }
+
+    private void BuildPenColors()
+    {
+        string[] hexes =
+        {
+            "#E81123", "#FF8C00", "#FFB900", "#16C60C",
+            "#0078D4", "#8E44AD", "#000000", "#FFFFFF",
+        };
+
+        foreach (var hex in hexes)
+        {
+            var color = (Color)ColorConverter.ConvertFromString(hex)!;
+            var inner = new Border
+            {
+                Width = 18,
+                Height = 18,
+                CornerRadius = new CornerRadius(3),
+                Background = new SolidColorBrush(color),
+            };
+            var ring = new Border
+            {
+                CornerRadius = new CornerRadius(5),
+                BorderBrush = Brushes.Transparent,
+                BorderThickness = new Thickness(2),
+                Padding = new Thickness(2),
+                Margin = new Thickness(0, 0, 6, 0),
+                Cursor = Cursors.Hand,
+                Tag = hex,
+                Child = inner,
+            };
+            ring.MouseLeftButtonDown += PenColor_Click;
+            PenColorPanel.Children.Add(ring);
+        }
+
+        HighlightPenColor(App.Settings.DefaultColor);
+    }
+
+    private void PenColor_Click(object sender, MouseButtonEventArgs e)
+    {
+        var hex = (string)((Border)sender).Tag;
+        App.Settings.DefaultColor = hex;
+        App.Settings.Save();
+        HighlightPenColor(hex);
+    }
+
+    private void HighlightPenColor(string hex)
+    {
+        foreach (Border ring in PenColorPanel.Children)
+        {
+            ring.BorderBrush = string.Equals((string)ring.Tag, hex, System.StringComparison.OrdinalIgnoreCase)
+                ? (Brush)System.Windows.Application.Current.Resources["Brush.TextPrimary"]
+                : Brushes.Transparent;
+        }
     }
 
     private App App => (App)System.Windows.Application.Current;

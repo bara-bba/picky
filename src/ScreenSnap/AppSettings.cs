@@ -17,6 +17,9 @@ internal sealed class AppSettings
     /// <summary>Accent color (hex) used across the GUI and the snip selection box.</summary>
     public string AccentColor { get; set; } = "#0078D4";
 
+    /// <summary>Default annotation (pen) color in the editor.</summary>
+    public string DefaultColor { get; set; } = "#E81123";
+
     private static string DefaultCaptureFolder =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyPictures), "ScreenSnap");
 
