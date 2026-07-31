@@ -1,4 +1,4 @@
-# ScreenSnap
+# Picky
 
 A Screenpresso-style screen-capture tool styled after Windows PowerToys: Fluent dark
 theme, rounded corners, Fluent-blue accent (`#0078D4`), and a system-tray workflow.
@@ -10,7 +10,7 @@ theme, rounded corners, Fluent-blue accent (`#0078D4`), and a system-tray workfl
   tray instead of quitting.
 - **Global shortcut**: a selectable system-wide hotkey triggers a region capture from
   anywhere. Default is **Win+Shift+S**, but that combo is reserved by the Windows
-  Snipping Tool, so ScreenSnap automatically falls back to **Ctrl+Shift+S** and says so.
+  Snipping Tool, so Picky automatically falls back to **Ctrl+Shift+S** and says so.
   Pick from Win+Shift+S / Ctrl+Shift+S / PrtScn / Ctrl+Shift+1 in the control panel.
   Implemented with `RegisterHotKey` against a hidden message window (`HotKeyService.cs`).
 - **Region capture** via a drag-select full-screen overlay (Win+Shift+S-style crosshair).
@@ -20,8 +20,8 @@ theme, rounded corners, Fluent-blue accent (`#0078D4`), and a system-tray workfl
 - **Gallery** (`GalleryWindow`): a light-box of past screenshots as thumbnail cards
   (newest first) with filename + timestamp; click a card to reopen it in the preview.
 - **Choosable capture folder**: pick it from the control panel ("Capture folder…") or
-  the gallery ("Change folder…"). Persisted to `%APPDATA%\ScreenSnap\settings.json`;
-  defaults to `Pictures\ScreenSnap`.
+  the gallery ("Change folder…"). Persisted to `%APPDATA%\Picky\settings.json`;
+  defaults to `Pictures\Picky`.
 - **Preview window** with Copy-to-clipboard, Open-folder (selects the file in Explorer),
   and Save-As-PNG.
 - **PowerToys-matching look**: a shared Fluent dark theme (`Theme.xaml`) with named
@@ -46,6 +46,6 @@ auto-save, gallery, and folder picker all exercised end-to-end.
 
 ## Run
 ```
-cd src/ScreenSnap
+cd src/Picky
 dotnet run
 ```

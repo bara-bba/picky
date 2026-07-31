@@ -7,8 +7,8 @@
     <UseWPF>true</UseWPF>
     <UseWindowsForms>true</UseWindowsForms>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <AssemblyName>ScreenSnap</AssemblyName>
-    <RootNamespace>ScreenSnap</RootNamespace>
+    <AssemblyName>Picky</AssemblyName>
+    <RootNamespace>Picky</RootNamespace>
     <ImplicitUsings>enable</ImplicitUsings>
     <SupportedOSPlatformVersion>10.0.19041.0</SupportedOSPlatformVersion>
     <Version>0.2.0</Version>
@@ -18,6 +18,13 @@
 
   <ItemGroup>
     <Using Remove="System.Windows.Forms" />
+  </ItemGroup>
+
+  <!-- Bundle ffmpeg next to the app for MP4 recording (git-ignored; fetch separately). -->
+  <ItemGroup Condition="Exists('tools\ffmpeg.exe')">
+    <None Include="tools\ffmpeg.exe" Link="ffmpeg.exe">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
   </ItemGroup>
 
 </Project>

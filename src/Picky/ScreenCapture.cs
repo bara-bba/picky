@@ -1,7 +1,7 @@
 using System.Drawing;
 using System.Drawing.Imaging;
 
-namespace ScreenSnap;
+namespace Picky;
 
 internal static class ScreenCapture
 {

@@ -6,7 +6,7 @@ using System.Windows.Interop;
 using System.Windows.Media;
 using Point = System.Windows.Point;
 
-namespace ScreenSnap;
+namespace Picky;
 
 /// <summary>
 /// Full-screen transparent overlay used to select a capture region. Two ways to grab:

@@ -3,6 +3,10 @@
 [Oo]bj/
 dist/
 
+# Bundled ffmpeg binary (fetch separately; ~100 MB)
+tools/ffmpeg.exe
+ffmpeg.exe
+
 # Rider / VS
 .vs/
 .idea/

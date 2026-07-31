@@ -1,10 +1,10 @@
 using System.IO;
 using System.Text.Json;
 
-namespace ScreenSnap;
+namespace Picky;
 
 /// <summary>
-/// User settings persisted to %APPDATA%\ScreenSnap\settings.json.
+/// User settings persisted to %APPDATA%\Picky\settings.json.
 /// Currently just the folder captures are auto-saved into.
 /// </summary>
 internal sealed class AppSettings
@@ -21,12 +21,12 @@ internal sealed class AppSettings
     public string DefaultColor { get; set; } = "#E81123";
 
     private static string DefaultCaptureFolder =>
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyPictures), "ScreenSnap");
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyPictures), "Picky");
 
     private static string SettingsPath =>
         Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-            "ScreenSnap",
+            "Picky",
             "settings.json");
 
     public static AppSettings Load()

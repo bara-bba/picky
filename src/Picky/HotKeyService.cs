@@ -1,7 +1,7 @@
 using System.Runtime.InteropServices;
 using System.Windows.Interop;
 
-namespace ScreenSnap;
+namespace Picky;
 
 /// <summary>A selectable global-hotkey preset: display name + Win32 modifiers/virtual-key.</summary>
 internal sealed record HotKeyDef(string Name, uint Modifiers, uint VirtualKey)
@@ -93,7 +93,7 @@ internal sealed class HotKeyService : IDisposable
         _onPressed = onPressed;
 
         // A hidden 0-size top-level window that only exists to receive WM_HOTKEY.
-        _source = new HwndSource(new HwndSourceParameters("ScreenSnapHotKey")
+        _source = new HwndSource(new HwndSourceParameters("PickyHotKey")
         {
             Width = 0,
             Height = 0,

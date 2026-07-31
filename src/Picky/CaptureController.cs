@@ -6,7 +6,7 @@ using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using Screen = System.Windows.Forms.Screen;
 
-namespace ScreenSnap;
+namespace Picky;
 
 /// <summary>
 /// Central capture flow shared by the main window and the tray icon:
@@ -114,7 +114,7 @@ internal static class CaptureController
     private static string SaveCapture(System.Drawing.Bitmap bitmap)
     {
         var folder = App.Settings.EnsureCaptureFolder();
-        var path = Path.Combine(folder, $"ScreenSnap_{DateTime.Now:yyyyMMdd_HHmmss}.png");
+        var path = Path.Combine(folder, $"Picky_{DateTime.Now:yyyyMMdd_HHmmss}.png");
         bitmap.Save(path, ImageFormat.Png);
         return path;
     }

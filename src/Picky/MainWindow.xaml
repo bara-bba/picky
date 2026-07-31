@@ -1,7 +1,7 @@
-<Window x:Class="ScreenSnap.MainWindow"
+<Window x:Class="Picky.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="ScreenSnap — Preferences"
+        Title="Picky — Preferences"
         Height="476"
         Width="400"
         WindowStyle="None"
@@ -39,7 +39,7 @@
         </Grid>
 
         <TextBlock Grid.Row="1"
-                   Text="ScreenSnap settings"
+                   Text="Picky settings"
                    Foreground="{StaticResource Brush.TextSecondary}"
                    FontSize="12"
                    Margin="0,4,0,18" />

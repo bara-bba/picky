@@ -1,7 +1,7 @@
 using System.Windows;
 using WinForms = System.Windows.Forms;
 
-namespace ScreenSnap;
+namespace Picky;
 
 public partial class App : Application
 {
@@ -9,6 +9,12 @@ public partial class App : Application
     private MainWindow _mainWindow = null!;
     private GalleryWindow? _gallery;
     private HotKeyService _hotKeys = null!;
+
+    private readonly RecordingController _recorder = new();
+    private WinForms.ToolStripMenuItem _recordMenuItem = null!;
+    private Window? _recordBar;
+    private System.Windows.Threading.DispatcherTimer? _recordTimer;
+    private DateTime _recordStart;
 
     internal static AppSettings Settings { get; private set; } = null!;
 
@@ -22,7 +28,7 @@ public partial class App : Application
     {
         base.OnStartup(e);
 
-        // Build-time helper: `ScreenSnap.exe --emit-icon <path>` writes the app .ico and exits.
+        // Build-time helper: `Picky.exe --emit-icon <path>` writes the app .ico and exits.
         if (e.Args.Length == 2 && e.Args[0] == "--emit-icon")
         {
             System.IO.File.WriteAllBytes(
@@ -55,6 +61,10 @@ public partial class App : Application
 
     protected override void OnExit(ExitEventArgs e)
     {
+        if (_recorder.IsRecording)
+        {
+            _recorder.Stop();
+        }
         _hotKeys?.Dispose();
         _trayIcon?.Dispose();
         base.OnExit(e);
@@ -127,13 +137,15 @@ public partial class App : Application
         // Default light tray menu.
         var menu = new WinForms.ContextMenuStrip();
         menu.Items.Add("Preferences", null, (_, _) => ShowMainWindow());
+        _recordMenuItem = new WinForms.ToolStripMenuItem("Record region…", null, (_, _) => ToggleRecording());
+        menu.Items.Add(_recordMenuItem);
         menu.Items.Add(new WinForms.ToolStripSeparator());
         menu.Items.Add("Exit", null, (_, _) => Shutdown());
 
         var icon = new WinForms.NotifyIcon
         {
             Icon = AppIcon.CreateIcon(ToDrawingColor(AccentTheme.Current), ToDrawingColor(AccentTheme.OnAccent)),
-            Text = "ScreenSnap",
+            Text = "Picky",
             Visible = true,
             ContextMenuStrip = menu,
         };
@@ -155,6 +167,130 @@ public partial class App : Application
     {
         _mainWindow.Show();
         _mainWindow.Activate();
+    }
+
+    // --- Screen recording ---
+
+    private void ToggleRecording()
+    {
+        if (_recorder.IsRecording)
+        {
+            StopRecording();
+        }
+        else
+        {
+            StartRecording();
+        }
+    }
+
+    private void StartRecording()
+    {
+        // Pick the region on the live (dimmed) screen — no freeze, since we record live.
+        var overlay = new RegionSelectWindow();
+        if (overlay.ShowDialog() != true)
+        {
+            return;
+        }
+
+        var folder = Settings.EnsureCaptureFolder();
+        var path = System.IO.Path.Combine(folder, $"Picky_{DateTime.Now:yyyyMMdd_HHmmss}.mp4");
+
+        if (!_recorder.Start(overlay.SelectedRegion, path, out var error))
+        {
+            WinForms.MessageBox.Show($"Couldn't start recording:\n{error}", "Picky");
+            return;
+        }
+
+        _recordMenuItem.Text = "⏹ Stop recording";
+        ShowRecordBar();
+    }
+
+    private void StopRecording()
+    {
+        var path = _recorder.Stop();
+        _recordMenuItem.Text = "Record region…";
+
+        _recordTimer?.Stop();
+        _recordTimer = null;
+        _recordBar?.Close();
+        _recordBar = null;
+
+        if (path is not null && System.IO.File.Exists(path))
+        {
+            _trayIcon.ShowBalloonTip(3000, "Picky", $"Recording saved: {System.IO.Path.GetFileName(path)}", WinForms.ToolTipIcon.Info);
+        }
+    }
+
+    private void ShowRecordBar()
+    {
+        _recordStart = DateTime.Now;
+
+        var dot = new System.Windows.Shapes.Ellipse
+        {
+            Width = 11,
+            Height = 11,
+            Fill = System.Windows.Media.Brushes.Red,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, 0, 8, 0),
+        };
+        var elapsed = new System.Windows.Controls.TextBlock
+        {
+            Text = "0:00",
+            Foreground = System.Windows.Media.Brushes.White,
+            FontSize = 13,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, 0, 12, 0),
+            MinWidth = 34,
+        };
+        var stop = new System.Windows.Controls.Button
+        {
+            Content = "Stop",
+            Style = (Style)Resources["AccentButton"],
+            Padding = new Thickness(12, 4, 12, 4),
+        };
+        stop.Click += (_, _) => StopRecording();
+
+        var row = new System.Windows.Controls.StackPanel { Orientation = System.Windows.Controls.Orientation.Horizontal };
+        row.Children.Add(dot);
+        row.Children.Add(elapsed);
+        row.Children.Add(stop);
+
+        var shell = new System.Windows.Controls.Border
+        {
+            Background = (System.Windows.Media.Brush)Resources["Brush.App"],
+            BorderBrush = (System.Windows.Media.Brush)Resources["Brush.Stroke"],
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(8),
+            Padding = new Thickness(12, 8, 12, 8),
+            Child = row,
+        };
+
+        _recordBar = new Window
+        {
+            WindowStyle = WindowStyle.None,
+            AllowsTransparency = true,
+            Background = System.Windows.Media.Brushes.Transparent,
+            Topmost = true,
+            ShowInTaskbar = false,
+            ResizeMode = ResizeMode.NoResize,
+            SizeToContent = SizeToContent.WidthAndHeight,
+            WindowStartupLocation = WindowStartupLocation.Manual,
+            Content = shell,
+        };
+        _recordBar.Loaded += (_, _) =>
+        {
+            _recordBar.Left = (SystemParameters.WorkArea.Width - _recordBar.ActualWidth) / 2 + SystemParameters.WorkArea.Left;
+            _recordBar.Top = SystemParameters.WorkArea.Top + 8;
+        };
+        _recordBar.Show();
+
+        _recordTimer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+        _recordTimer.Tick += (_, _) =>
+        {
+            var t = DateTime.Now - _recordStart;
+            elapsed.Text = $"{(int)t.TotalMinutes}:{t.Seconds:00}";
+        };
+        _recordTimer.Start();
     }
 
     public void ShowGallery() => ShowGallery(dockLowerRight: false, selectPath: null);

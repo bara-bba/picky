@@ -3,7 +3,7 @@ using System.Windows;
 using System.Windows.Media;
 using Color = System.Windows.Media.Color;
 
-namespace ScreenSnap;
+namespace Picky;
 
 /// <summary>
 /// Single source of truth for the app accent color. Mutating the shared

@@ -7,11 +7,11 @@ using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
-using ScreenSnap.Native;
+using Picky.Native;
 using Point = System.Windows.Point;
 using Size = System.Windows.Size;
 
-namespace ScreenSnap;
+namespace Picky;
 
 public partial class GalleryWindow : Window
 {

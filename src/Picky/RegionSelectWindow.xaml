@@ -1,4 +1,4 @@
-<Window x:Class="ScreenSnap.RegionSelectWindow"
+<Window x:Class="Picky.RegionSelectWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         WindowStyle="None"

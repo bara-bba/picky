@@ -1,7 +1,7 @@
 using System.Drawing;
 using System.Windows.Forms;
 
-namespace ScreenSnap;
+namespace Picky;
 
 /// <summary>PowerToys-dark palette for the tray context menu.</summary>
 internal static class TrayIcon

@@ -5,7 +5,7 @@ using System.IO;
 using System.Windows.Media.Imaging;
 using DColor = System.Drawing.Color;
 
-namespace ScreenSnap;
+namespace Picky;
 
 /// <summary>
 /// Draws the app glyph — an accent rounded square with a viewfinder (corner

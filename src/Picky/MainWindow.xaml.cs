@@ -2,13 +2,13 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
-using ScreenSnap.Native;
+using Picky.Native;
 using Color = System.Windows.Media.Color;
 using Brush = System.Windows.Media.Brush;
 using Brushes = System.Windows.Media.Brushes;
 using ColorConverter = System.Windows.Media.ColorConverter;
 
-namespace ScreenSnap;
+namespace Picky;
 
 public partial class MainWindow : Window
 {

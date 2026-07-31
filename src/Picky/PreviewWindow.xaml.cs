@@ -10,7 +10,7 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using Microsoft.Win32;
-using ScreenSnap.Native;
+using Picky.Native;
 using Point = System.Windows.Point;
 using MediaColor = System.Windows.Media.Color;
 using MediaBrush = System.Windows.Media.Brush;
@@ -23,7 +23,7 @@ using WpfRectangle = System.Windows.Shapes.Rectangle;
 using WpfEllipse = System.Windows.Shapes.Ellipse;
 using WpfPolygon = System.Windows.Shapes.Polygon;
 
-namespace ScreenSnap;
+namespace Picky;
 
 public partial class PreviewWindow : Window
 {
@@ -1344,7 +1344,7 @@ public partial class PreviewWindow : Window
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, $"Couldn't save:\n{ex.Message}", "ScreenSnap", MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageBox.Show(this, $"Couldn't save:\n{ex.Message}", "Picky", MessageBoxButton.OK, MessageBoxImage.Warning);
             return false;
         }
     }

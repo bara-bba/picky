@@ -2,7 +2,7 @@ using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Interop;
 
-namespace ScreenSnap.Native;
+namespace Picky.Native;
 
 /// <summary>
 /// Applies the same DWM window attributes PowerToys utilities use:
