@@ -4,78 +4,158 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
+using Picky.Native;
 using Point = System.Windows.Point;
+using DrawingPoint = System.Drawing.Point;
 
 namespace Picky;
 
 /// <summary>
-/// Full-screen transparent overlay used to select a capture region. Two ways to grab:
-/// hover a window and single-click to capture its auto-detected bounds (Snipping-Tool
-/// window mode), or drag a freeform marquee.
+/// Full-desktop overlay used to select a capture region. Two ways to grab: hover a window
+/// and single-click to capture its auto-detected bounds (Snipping-Tool window mode), or
+/// drag a freeform marquee.
+///
+/// <para><b>Multi-monitor / mixed-DPI correctness.</b> The overlay is sized and positioned
+/// with <c>SetWindowPos</c> in raw physical pixels rather than through WPF's
+/// <c>Left/Top/Width/Height</c>. WPF expresses those in device-independent units scaled by
+/// a *single* monitor's DPI, so on a desktop mixing (say) 175% and 100% displays the window
+/// silently lands in the wrong place at the wrong size.</para>
+///
+/// <para>Selection coordinates are then converted using the ratio between the frozen
+/// bitmap's pixel size and the canvas's rendered size. Because the backdrop image is
+/// stretched to fill the window exactly, that ratio is correct by construction for every
+/// monitor at once — there is deliberately no per-monitor DPI scalar anywhere in this
+/// file.</para>
 /// </summary>
 public partial class RegionSelectWindow : Window
 {
+    /// <summary>Physical-pixel rect that the overlay covers; identical to the frozen bitmap's bounds.</summary>
+    private readonly Rectangle _canvasPx;
+
+    private readonly ImageSource _frozen;
+
+    /// <summary>The frozen backdrop as a bitmap, so the loupe can crop pixels out of it.</summary>
+    private readonly BitmapSource? _frozenBitmap;
+
+    /// <summary>Source pixels shown across the loupe. Odd, so there is a true centre pixel.</summary>
+    private const int LensPixels = 15;
+
+    /// <summary>DIPs per magnified pixel. Must match the loupe sizes in the XAML (15 * 9 = 135).</summary>
+    private const int LensCell = 9;
+
     private Point _start;
     private bool _dragging;
     private bool _movedEnough;
-    private double _dpiX = 1.0;
-    private double _dpiY = 1.0;
     private IntPtr _selfHandle;
 
-    // Bounds (physical pixels) of the window currently under the cursor, for click-to-grab.
-    private System.Drawing.Rectangle _candidatePx;
+    /// <summary>Bounds (physical px) of the window currently under the cursor, for click-to-grab.</summary>
+    private Rectangle _candidatePx;
 
     private const double DragThreshold = 4.0;
 
-    private readonly System.Windows.Media.ImageSource? _frozen;
-
     /// <param name="frozen">
-    /// A snapshot of the whole screen taken before the overlay appeared, shown as the
-    /// backdrop so transient UI (open menus, tooltips) can still be selected.
+    /// Snapshot of the whole virtual desktop taken before the overlay appeared, shown as the
+    /// backdrop so transient UI (open menus, tooltips) can still be selected. When omitted
+    /// the overlay grabs its own snapshot, so the backdrop is never blank.
     /// </param>
-    public RegionSelectWindow(System.Windows.Media.ImageSource? frozen = null)
+    /// <param name="frozenBoundsPx">Physical-pixel bounds that <paramref name="frozen"/> covers.</param>
+    public RegionSelectWindow(ImageSource? frozen = null, Rectangle? frozenBoundsPx = null)
     {
         InitializeComponent();
 
-        _frozen = frozen;
-
-        // Cover the whole virtual desktop explicitly. Relying on WindowState=Maximized
-        // for a borderless AllowsTransparency window is unreliable (it can stay at the
-        // default tiny size), so size to the virtual screen bounds instead.
-        Left = SystemParameters.VirtualScreenLeft;
-        Top = SystemParameters.VirtualScreenTop;
-        Width = SystemParameters.VirtualScreenWidth;
-        Height = SystemParameters.VirtualScreenHeight;
+        if (frozen is not null)
+        {
+            _frozen = frozen;
+            _canvasPx = frozenBoundsPx ?? MonitorInfo.VirtualScreen;
+        }
+        else
+        {
+            // Self-freeze. The window is opaque now (no AllowsTransparency), so a backdrop
+            // is mandatory rather than optional.
+            using var own = ScreenCapture.CaptureVirtualScreen(out var bounds);
+            _frozen = ScreenCapture.ToImageSource(own);
+            _canvasPx = bounds;
+        }
 
         // Selection box uses the app accent: solid stroke, translucent fill.
         SelectionRect.Stroke = (System.Windows.Media.Brush)System.Windows.Application.Current.Resources["Brush.Accent"];
         var fill = AccentTheme.Current;
-        fill.A = 0x33;
+        fill.A = 0x22;
         SelectionRect.Fill = new SolidColorBrush(fill);
+
+        Frozen.Source = _frozen;
+        Bright.Source = _frozen;
+        Bright.Clip = Geometry.Empty; // nothing un-dimmed until there is a selection
+
+        // The loupe crops straight out of the frozen backdrop, so what it magnifies is exactly
+        // what will be captured.
+        _frozenBitmap = _frozen as BitmapSource;
+        if (_frozenBitmap is not null)
+        {
+            LensImage.Source = _frozenBitmap;
+        }
 
         Loaded += (_, _) =>
         {
-            Dim.Width = ActualWidth;
-            Dim.Height = ActualHeight;
-
-            if (_frozen is not null)
-            {
-                Frozen.Source = _frozen;
-                Frozen.Width = ActualWidth;
-                Frozen.Height = ActualHeight;
-            }
-
-            _selfHandle = new WindowInteropHelper(this).Handle;
-            var source = PresentationSource.FromVisual(this);
-            _dpiX = source?.CompositionTarget?.TransformToDevice.M11 ?? 1.0;
-            _dpiY = source?.CompositionTarget?.TransformToDevice.M22 ?? 1.0;
-
+            ApplyPhysicalBounds(); // re-assert in case WPF re-applied its own layout
+            PositionHint();
             Activate();
+            Focus();
+
+            // Show the loupe straight away rather than waiting for the first mouse move.
+            UpdateCandidate();
+            UpdateLens(PxToCanvas(MonitorInfo.CursorPosition.X, MonitorInfo.CursorPosition.Y));
         };
     }
 
+    /// <summary>
+    /// Sizes the HWND to the exact physical pixel rect it must cover, bypassing WPF's
+    /// DIP conversion (which cannot represent a mixed-DPI span).
+    /// </summary>
+    protected override void OnSourceInitialized(EventArgs e)
+    {
+        base.OnSourceInitialized(e);
+        _selfHandle = new WindowInteropHelper(this).Handle;
+        ApplyPhysicalBounds();
+    }
+
+    private void ApplyPhysicalBounds()
+    {
+        if (_selfHandle == IntPtr.Zero)
+        {
+            return;
+        }
+
+        SetWindowPos(
+            _selfHandle, IntPtr.Zero,
+            _canvasPx.X, _canvasPx.Y, _canvasPx.Width, _canvasPx.Height,
+            SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+
+    // --- Coordinate mapping (canvas DIPs <-> physical pixels) ---
+
+    private double PxPerDipX => RootCanvas.ActualWidth > 0 ? _canvasPx.Width / RootCanvas.ActualWidth : 1.0;
+
+    private double PxPerDipY => RootCanvas.ActualHeight > 0 ? _canvasPx.Height / RootCanvas.ActualHeight : 1.0;
+
+    private DrawingPoint CanvasToPx(Point p) => new(
+        _canvasPx.X + (int)Math.Round(p.X * PxPerDipX),
+        _canvasPx.Y + (int)Math.Round(p.Y * PxPerDipY));
+
+    private Point PxToCanvas(double x, double y) => new(
+        (x - _canvasPx.X) / PxPerDipX,
+        (y - _canvasPx.Y) / PxPerDipY);
+
+    // --- Mouse ---
+
     private void Canvas_MouseDown(object sender, MouseButtonEventArgs e)
     {
+        if (e.ChangedButton != MouseButton.Left)
+        {
+            return;
+        }
+
         _start = e.GetPosition(RootCanvas);
         _dragging = true;
         _movedEnough = false;
@@ -84,13 +164,16 @@ public partial class RegionSelectWindow : Window
 
     private void Canvas_MouseMove(object sender, MouseEventArgs e)
     {
+        var position = e.GetPosition(RootCanvas);
+
         if (!_dragging)
         {
             UpdateCandidate();
+            UpdateLens(position); // after UpdateCandidate, so the label can show its size
             return;
         }
 
-        var current = e.GetPosition(RootCanvas);
+        var current = position;
 
         // Below the threshold it's still a click (keep the auto-detected window highlight).
         if (!_movedEnough && (current - _start).Length < DragThreshold)
@@ -100,21 +183,18 @@ public partial class RegionSelectWindow : Window
 
         _movedEnough = true;
 
-        var x = Math.Min(_start.X, current.X);
-        var y = Math.Min(_start.Y, current.Y);
-        var w = Math.Abs(current.X - _start.X);
-        var h = Math.Abs(current.Y - _start.Y);
+        ShowSelection(
+            Math.Min(_start.X, current.X),
+            Math.Min(_start.Y, current.Y),
+            Math.Abs(current.X - _start.X),
+            Math.Abs(current.Y - _start.Y));
 
-        Canvas.SetLeft(SelectionRect, x);
-        Canvas.SetTop(SelectionRect, y);
-        SelectionRect.Width = w;
-        SelectionRect.Height = h;
-        SelectionRect.Visibility = Visibility.Visible;
+        UpdateLens(current);
     }
 
     private void Canvas_MouseUp(object sender, MouseButtonEventArgs e)
     {
-        if (!_dragging)
+        if (!_dragging || e.ChangedButton != MouseButton.Left)
         {
             return;
         }
@@ -131,121 +211,246 @@ public partial class RegionSelectWindow : Window
         }
     }
 
-    /// <summary>Freeform marquee → capture the drawn box.</summary>
-    private void CommitManualSelection()
-    {
-        var left = Canvas.GetLeft(SelectionRect);
-        var top = Canvas.GetTop(SelectionRect);
-        var width = SelectionRect.Width;
-        var height = SelectionRect.Height;
+    /// <summary>Right-click aborts, same as Esc.</summary>
+    private void Canvas_MouseRightButtonUp(object sender, MouseButtonEventArgs e) => Cancel();
 
-        if (width < 2 || height < 2)
+    /// <summary>Draws the selection outline, un-dims the chosen area, and updates the readout.</summary>
+    private void ShowSelection(double x, double y, double width, double height)
+    {
+        Canvas.SetLeft(SelectionRect, x);
+        Canvas.SetTop(SelectionRect, y);
+        SelectionRect.Width = width;
+        SelectionRect.Height = height;
+        SelectionRect.Visibility = Visibility.Visible;
+
+        // Cut-out: the same screenshot, clipped to the selection, drawn over the dim layer.
+        Bright.Clip = new RectangleGeometry(new Rect(x, y, width, height));
+    }
+
+    private void ClearSelection()
+    {
+        SelectionRect.Visibility = Visibility.Collapsed;
+        Bright.Clip = Geometry.Empty;
+    }
+
+    /// <summary>
+    /// Magnifies the frozen pixels around <paramref name="canvas"/> into the loupe and parks it
+    /// clear of the cursor.
+    /// </summary>
+    private void UpdateLens(Point canvas)
+    {
+        if (_frozenBitmap is null)
         {
-            DialogResult = false;
-            Close();
             return;
         }
 
-        // Convert device-independent WPF units to physical pixels for the capture.
-        SelectedRegion = new System.Drawing.Rectangle(
-            (int)((left + SystemParameters.VirtualScreenLeft) * _dpiX),
-            (int)((top + SystemParameters.VirtualScreenTop) * _dpiY),
-            (int)(width * _dpiX),
-            (int)(height * _dpiY));
+        // Bitmap indices: the frozen image starts at the virtual-desktop origin, which can be negative.
+        var cursorPx = CanvasToPx(canvas);
+        int bx = cursorPx.X - _canvasPx.X;
+        int by = cursorPx.Y - _canvasPx.Y;
 
+        int width = _frozenBitmap.PixelWidth;
+        int height = _frozenBitmap.PixelHeight;
+
+        if (width < LensPixels || height < LensPixels)
+        {
+            return;
+        }
+
+        int half = LensPixels / 2;
+        int wantLeft = bx - half;
+        int wantTop = by - half;
+
+        // Clamp the crop into the bitmap, then shift the image back by however much we clamped, so
+        // the pixel under the cursor stays under the crosshair even at the edges of the desktop.
+        int left = Math.Clamp(wantLeft, 0, width - LensPixels);
+        int top = Math.Clamp(wantTop, 0, height - LensPixels);
+
+        LensImage.Source = new CroppedBitmap(_frozenBitmap, new Int32Rect(left, top, LensPixels, LensPixels));
+        LensOffset.X = (left - wantLeft) * LensCell;
+        LensOffset.Y = (top - wantTop) * LensCell;
+
+        LensText.Text = SelectionRect.Visibility == Visibility.Visible
+            ? $"{PxSize().Width} × {PxSize().Height}"
+            : $"{cursorPx.X}, {cursorPx.Y}";
+
+        LensPanel.Visibility = Visibility.Visible;
+        PositionLens(canvas);
+    }
+
+    /// <summary>Current selection size in physical pixels.</summary>
+    private System.Drawing.Size PxSize()
+    {
+        var topLeft = CanvasToPx(new Point(Canvas.GetLeft(SelectionRect), Canvas.GetTop(SelectionRect)));
+        var bottomRight = CanvasToPx(new Point(
+            Canvas.GetLeft(SelectionRect) + SelectionRect.Width,
+            Canvas.GetTop(SelectionRect) + SelectionRect.Height));
+
+        return new System.Drawing.Size(bottomRight.X - topLeft.X, bottomRight.Y - topLeft.Y);
+    }
+
+    /// <summary>
+    /// Keeps the loupe next to the cursor without sitting on top of it, flipping side or vertical
+    /// position rather than sliding off the desktop.
+    /// </summary>
+    private void PositionLens(Point canvas)
+    {
+        const double gap = 22;
+
+        LensPanel.UpdateLayout();
+        double w = LensPanel.ActualWidth;
+        double h = LensPanel.ActualHeight;
+
+        double x = canvas.X + gap;
+        if (x + w > RootCanvas.ActualWidth)
+        {
+            x = canvas.X - gap - w;
+        }
+
+        double y = canvas.Y + gap;
+        if (y + h > RootCanvas.ActualHeight)
+        {
+            y = canvas.Y - gap - h;
+        }
+
+        Canvas.SetLeft(LensPanel, Math.Clamp(x, 0, Math.Max(0, RootCanvas.ActualWidth - w)));
+        Canvas.SetTop(LensPanel, Math.Clamp(y, 0, Math.Max(0, RootCanvas.ActualHeight - h)));
+    }
+
+    /// <summary>Puts the hint on the monitor the pointer is on, not always the leftmost one.</summary>
+    private void PositionHint()
+    {
+        var monitor = MonitorInfo.FromCursor();
+        var topLeft = PxToCanvas(monitor.Bounds.Left, monitor.Bounds.Top);
+        var bottomRight = PxToCanvas(monitor.Bounds.Right, monitor.Bounds.Bottom);
+
+        HintPanel.UpdateLayout();
+
+        double centered = topLeft.X + ((bottomRight.X - topLeft.X) - HintPanel.ActualWidth) / 2;
+        Canvas.SetLeft(HintPanel, Math.Max(topLeft.X + 8, centered));
+        Canvas.SetTop(HintPanel, topLeft.Y + 32);
+    }
+
+    // --- Commit ---
+
+    /// <summary>Freeform marquee → capture the drawn box.</summary>
+    private void CommitManualSelection()
+    {
+        double left = Canvas.GetLeft(SelectionRect);
+        double top = Canvas.GetTop(SelectionRect);
+        double width = SelectionRect.Width;
+        double height = SelectionRect.Height;
+
+        if (width < 2 || height < 2)
+        {
+            Cancel();
+            return;
+        }
+
+        // Map both corners through the same transform so width/height can't drift by a
+        // rounding step, then clamp to what was actually captured.
+        var topLeft = CanvasToPx(new Point(left, top));
+        var bottomRight = CanvasToPx(new Point(left + width, top + height));
+
+        var region = Rectangle.FromLTRB(topLeft.X, topLeft.Y, bottomRight.X, bottomRight.Y);
+        region.Intersect(_canvasPx);
+
+        if (region.Width < 1 || region.Height < 1)
+        {
+            Cancel();
+            return;
+        }
+
+        SelectedRegion = region;
         DialogResult = true;
-        Close();
     }
 
     /// <summary>
     /// Single click → capture the auto-detected window under the cursor, or, if nothing
-    /// plausible was detected, the full screen the cursor is on.
+    /// plausible was detected, the whole monitor the cursor is on.
     /// </summary>
     private void CommitAutoSelection()
     {
-        if (_candidatePx.Width >= 2 && _candidatePx.Height >= 2)
+        var region = _candidatePx.Width >= 2 && _candidatePx.Height >= 2
+            ? _candidatePx
+            : MonitorInfo.FromCursor().Bounds;
+
+        region.Intersect(_canvasPx);
+
+        if (region.Width < 1 || region.Height < 1)
         {
-            SelectedRegion = _candidatePx;
-        }
-        else
-        {
-            var bounds = GetCursorPos(out var pt)
-                ? System.Windows.Forms.Screen.FromPoint(new System.Drawing.Point(pt.X, pt.Y)).Bounds
-                : System.Windows.Forms.Screen.PrimaryScreen!.Bounds;
-            SelectedRegion = new System.Drawing.Rectangle(bounds.X, bounds.Y, bounds.Width, bounds.Height);
+            Cancel();
+            return;
         }
 
+        SelectedRegion = region;
         DialogResult = true;
-        Close();
     }
+
+    private void Cancel() => DialogResult = false;
 
     /// <summary>Finds the top-level window under the cursor and highlights its bounds.</summary>
     private void UpdateCandidate()
     {
-        if (GetCursorPos(out var pt) && TryWindowUnderPoint(pt, out var rect))
+        var cursor = MonitorInfo.CursorPosition;
+
+        if (TryWindowUnderPoint(cursor, out var candidate))
         {
-            var candidate = new System.Drawing.Rectangle(
-                rect.Left, rect.Top, rect.Right - rect.Left, rect.Bottom - rect.Top);
-            candidate.Intersect(VirtualScreenPx());
+            candidate.Intersect(_canvasPx);
             _candidatePx = candidate;
 
             if (candidate.Width >= 2 && candidate.Height >= 2)
             {
-                // Physical px → canvas DIP (canvas origin sits at the virtual-screen origin).
-                Canvas.SetLeft(SelectionRect, candidate.Left / _dpiX - SystemParameters.VirtualScreenLeft);
-                Canvas.SetTop(SelectionRect, candidate.Top / _dpiY - SystemParameters.VirtualScreenTop);
-                SelectionRect.Width = candidate.Width / _dpiX;
-                SelectionRect.Height = candidate.Height / _dpiY;
-                SelectionRect.Visibility = Visibility.Visible;
+                var topLeft = PxToCanvas(candidate.Left, candidate.Top);
+                var bottomRight = PxToCanvas(candidate.Right, candidate.Bottom);
+                ShowSelection(
+                    topLeft.X,
+                    topLeft.Y,
+                    bottomRight.X - topLeft.X,
+                    bottomRight.Y - topLeft.Y);
                 return;
             }
         }
 
-        _candidatePx = System.Drawing.Rectangle.Empty;
-        SelectionRect.Visibility = Visibility.Collapsed;
+        _candidatePx = Rectangle.Empty;
+        ClearSelection();
     }
 
-    private System.Drawing.Rectangle VirtualScreenPx() => new(
-        (int)(SystemParameters.VirtualScreenLeft * _dpiX),
-        (int)(SystemParameters.VirtualScreenTop * _dpiY),
-        (int)(SystemParameters.VirtualScreenWidth * _dpiX),
-        (int)(SystemParameters.VirtualScreenHeight * _dpiY));
-
-    private bool TryWindowUnderPoint(POINT pt, out RECT rect)
+    private bool TryWindowUnderPoint(DrawingPoint pt, out Rectangle bounds)
     {
         IntPtr found = IntPtr.Zero;
-        RECT foundRect = default;
+        Rectangle foundBounds = Rectangle.Empty;
 
-        // EnumWindows walks top-of-Z-order first, so the first containing hit is the
-        // frontmost real window under the cursor.
-        EnumWindows((hwnd, _) =>
+        // Walks top-of-Z-order first, so the first containing hit is the frontmost real window.
+        WindowInfo.ForEachTopLevel(hwnd =>
         {
-            if (hwnd == _selfHandle || !IsWindowVisible(hwnd) || IsIconic(hwnd) || IsCloaked(hwnd))
+            if (hwnd == _selfHandle
+                || !WindowInfo.IsVisible(hwnd)
+                || WindowInfo.IsMinimised(hwnd)
+                || WindowInfo.IsCloaked(hwnd)
+                || WindowInfo.IsToolWindow(hwnd))
             {
                 return true;
             }
 
-            if ((GetWindowLong(hwnd, GWL_EXSTYLE) & WS_EX_TOOLWINDOW) != 0)
-            {
-                return true; // skip palettes / tool windows
-            }
-
-            if (!GetWindowRect(hwnd, out var r) || r.Right - r.Left <= 0 || r.Bottom - r.Top <= 0)
+            // Visible bounds, not GetWindowRect: the latter includes the invisible resize border,
+            // which made auto-detect grab a rectangle wider and taller than the window.
+            if (!WindowInfo.TryVisibleBounds(hwnd, out var rect) || rect.Width <= 0 || rect.Height <= 0)
             {
                 return true;
             }
 
-            if (pt.X >= r.Left && pt.X < r.Right && pt.Y >= r.Top && pt.Y < r.Bottom)
+            if (rect.Contains(pt.X, pt.Y))
             {
                 found = hwnd;
-                foundRect = r;
+                foundBounds = rect;
                 return false; // stop enumeration
             }
 
             return true;
-        }, IntPtr.Zero);
+        });
 
-        rect = foundRect;
+        bounds = foundBounds;
         return found != IntPtr.Zero;
     }
 
@@ -253,58 +458,19 @@ public partial class RegionSelectWindow : Window
     {
         if (e.Key == Key.Escape)
         {
-            DialogResult = false;
-            Close();
+            Cancel();
         }
     }
 
-    public System.Drawing.Rectangle SelectedRegion { get; private set; }
+    /// <summary>The chosen region in physical pixels on the virtual desktop.</summary>
+    public Rectangle SelectedRegion { get; private set; }
 
-    // --- Win32 window hit-testing ---
+    // --- Win32 ---
 
-    private const int GWL_EXSTYLE = -20;
-    private const int WS_EX_TOOLWINDOW = 0x00000080;
-    private const int DWMWA_CLOAKED = 14;
-
-    private static bool IsCloaked(IntPtr hwnd)
-        => DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, out int cloaked, sizeof(int)) == 0 && cloaked != 0;
-
-    private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+    private const uint SWP_NOZORDER = 0x0004;
+    private const uint SWP_NOACTIVATE = 0x0010;
 
     [DllImport("user32.dll")]
-    private static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
-
-    [DllImport("user32.dll")]
-    private static extern bool IsWindowVisible(IntPtr hWnd);
-
-    [DllImport("user32.dll")]
-    private static extern bool IsIconic(IntPtr hWnd);
-
-    [DllImport("user32.dll")]
-    private static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
-
-    [DllImport("user32.dll")]
-    private static extern int GetWindowLong(IntPtr hWnd, int nIndex);
-
-    [DllImport("user32.dll")]
-    private static extern bool GetCursorPos(out POINT lpPoint);
-
-    [DllImport("dwmapi.dll")]
-    private static extern int DwmGetWindowAttribute(IntPtr hwnd, int attr, out int value, int size);
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct RECT
-    {
-        public int Left;
-        public int Top;
-        public int Right;
-        public int Bottom;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct POINT
-    {
-        public int X;
-        public int Y;
-    }
+    private static extern bool SetWindowPos(
+        IntPtr hWnd, IntPtr hWndInsertAfter, int x, int y, int cx, int cy, uint uFlags);
 }

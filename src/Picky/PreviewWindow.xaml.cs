@@ -79,6 +79,7 @@ public partial class PreviewWindow : Window
 
     // Overlay visuals.
     private readonly WpfPolygon _outline;
+    private readonly WpfPolygon _outlineUnder;
     private readonly WpfRectangle[] _cornerHandles = new WpfRectangle[4];
     private readonly WpfEllipse _rotateHandle;
     private readonly WpfEllipse[] _endpointHandles = new WpfEllipse[2];
@@ -90,9 +91,62 @@ public partial class PreviewWindow : Window
     private const double HitTolerance = 6;
     private const double HandleSize = 9;
 
-    public PreviewWindow(Bitmap bitmap, string savedPath)
+    /// <summary>Shift constrains angles to multiples of this (0/45/90/135/…).</summary>
+    private const double SnapAngleDegrees = 45;
+
+    private static bool ShiftHeld => (Keyboard.Modifiers & ModifierKeys.Shift) == ModifierKeys.Shift;
+
+    /// <summary>
+    /// Projects <paramref name="to"/> onto the nearest 45° ray from <paramref name="from"/>, keeping
+    /// the original length. Used so Shift-drawing an arrow, or Shift-dragging one of its endpoints,
+    /// lands on a clean angle instead of near one.
+    /// </summary>
+    private static Point SnapToAngle(Point from, Point to)
     {
-        InitializeComponent();
+        double dx = to.X - from.X;
+        double dy = to.Y - from.Y;
+        double length = Math.Sqrt(dx * dx + dy * dy);
+
+        if (length < 0.001)
+        {
+            return to;
+        }
+
+        double step = SnapAngleDegrees * Math.PI / 180;
+        double snapped = Math.Round(Math.Atan2(dy, dx) / step) * step;
+
+        return new Point(from.X + Math.Cos(snapped) * length, from.Y + Math.Sin(snapped) * length);
+    }
+
+    /// <summary>
+    /// The two polygons that together form one marching-ants outline: <c>Under</c> is a solid white
+    /// run, <c>Over</c> is a black dashed run drawn on top of it. Callers must keep both sets of
+    /// Points in sync. Dash and gap are equal so the black/white split is even.
+    /// </summary>
+    private static (WpfPolygon Under, WpfPolygon Over) CreateAntsPair()
+    {
+        var under = new WpfPolygon
+        {
+            Stroke = MediaBrushes.White,
+            StrokeThickness = 1.4,
+            Fill = MediaBrushes.Transparent,
+            IsHitTestVisible = false,
+        };
+
+        var over = new WpfPolygon
+        {
+            Stroke = MediaBrushes.Black,
+            StrokeThickness = 1.4,
+            StrokeDashArray = new DoubleCollection { 3, 3 },
+            Fill = MediaBrushes.Transparent,
+            IsHitTestVisible = false,
+        };
+
+        return (under, over);
+    }
+
+    public PreviewWindow(Bitmap bitmap, string savedPath)
+    {        InitializeComponent();
         DwmHelper.ApplyPowerToysChrome(this);
         Icon = ((App)System.Windows.Application.Current).CurrentIconSource();
         _bitmap = bitmap;
@@ -103,14 +157,15 @@ public partial class PreviewWindow : Window
 
         var accent = (MediaBrush)System.Windows.Application.Current.Resources["Brush.Accent"];
 
-        _outline = new WpfPolygon
-        {
-            Stroke = accent,
-            StrokeThickness = 1,
-            StrokeDashArray = new DoubleCollection { 3, 2 },
-            Fill = MediaBrushes.Transparent,
-            IsHitTestVisible = false,
-        };
+        // Two-tone "marching ants" instead of one accent-coloured dashed line.
+        //
+        // The ask was to draw the outline in the negative of the pixels underneath. WPF shapes have
+        // no difference/invert blend mode (that lives in UWP/Win2D), so the standard stand-in is a
+        // solid white run with a black dashed run on top: the dash gaps reveal white, giving a
+        // black-and-white edge that reads against any background. A single colour cannot — with the
+        // accent set to white, the old outline vanished completely over a light screenshot.
+        (_outlineUnder, _outline) = CreateAntsPair();
+        AddFixedHandle(_outlineUnder);
         AddFixedHandle(_outline);
 
         var cursors = new[] { Cursors.SizeNWSE, Cursors.SizeNESW, Cursors.SizeNWSE, Cursors.SizeNESW };
@@ -121,7 +176,8 @@ public partial class PreviewWindow : Window
                 Width = HandleSize,
                 Height = HandleSize,
                 Fill = MediaBrushes.White,
-                Stroke = accent,
+                // Dark edge, not the accent: a white accent made these white-on-white and invisible.
+                Stroke = MediaBrushes.Black,
                 StrokeThickness = 1,
                 Cursor = cursors[i],
                 Tag = i,
@@ -138,7 +194,7 @@ public partial class PreviewWindow : Window
             Width = HandleSize + 2,
             Height = HandleSize + 2,
             Fill = accent,
-            Stroke = MediaBrushes.White,
+            Stroke = MediaBrushes.Black,
             StrokeThickness = 1,
             Cursor = Cursors.Hand,
         };
@@ -154,7 +210,7 @@ public partial class PreviewWindow : Window
                 Width = HandleSize + 3,
                 Height = HandleSize + 3,
                 Fill = MediaBrushes.White,
-                Stroke = accent,
+                Stroke = MediaBrushes.Black,
                 StrokeThickness = 2,
                 Cursor = Cursors.Cross,
                 Tag = i,
@@ -310,9 +366,13 @@ public partial class PreviewWindow : Window
 
     private void HighlightSwatch(Border? selected)
     {
+        // Accent (read live from resources) so the active-colour ring matches every other selection
+        // cue in the app, rather than being a fixed white ring.
+        var accent = (MediaBrush)System.Windows.Application.Current.Resources["Brush.Accent"];
+
         foreach (Border ring in SwatchPanel.Children)
         {
-            ring.BorderBrush = ReferenceEquals(ring, selected) ? MediaBrushes.White : MediaBrushes.Transparent;
+            ring.BorderBrush = ReferenceEquals(ring, selected) ? accent : MediaBrushes.Transparent;
         }
     }
 
@@ -701,7 +761,8 @@ public partial class PreviewWindow : Window
         }
         else if (_active is WpfPath path)
         {
-            path.Data = BuildArrow(_start, p, _thickness);
+            // Shift constrains a new arrow to 0/45/90/135/… while drawing.
+            path.Data = BuildArrow(_start, ShiftHeld ? SnapToAngle(_start, p) : p, _thickness);
         }
     }
 
@@ -795,7 +856,12 @@ public partial class PreviewWindow : Window
         {
             if (_active is WpfPath path)
             {
-                _arrowPoints[path] = (_start, end);
+                // Snap on commit as well. These stored endpoints drive the endpoint handles and any
+                // later re-render, so leaving them unsnapped would make the arrow jump off its clean
+                // angle the instant it gets selected.
+                var tip = ShiftHeld ? SnapToAngle(_start, end) : end;
+                _arrowPoints[path] = (_start, tip);
+                path.Data = BuildArrow(_start, tip, path.StrokeThickness);
             }
             SelectOnly(_active); // auto-select the freshly drawn object
         }
@@ -940,18 +1006,21 @@ public partial class PreviewWindow : Window
             {
                 var m = ElemMatrix(el);
                 var c = LocalCorners(el);
-                var poly = new WpfPolygon
+                var points = new PointCollection
                 {
-                    Stroke = accent,
-                    StrokeThickness = 1,
-                    StrokeDashArray = new DoubleCollection { 3, 2 },
-                    Fill = MediaBrushes.Transparent,
-                    IsHitTestVisible = false,
-                    Points = new PointCollection { m.Transform(c[0]), m.Transform(c[1]), m.Transform(c[2]), m.Transform(c[3]) },
+                    m.Transform(c[0]), m.Transform(c[1]), m.Transform(c[2]), m.Transform(c[3]),
                 };
-                Panel.SetZIndex(poly, 10000);
-                AnnotationCanvas.Children.Add(poly);
-                _multiOutlines.Add(poly);
+
+                var (under, over) = CreateAntsPair();
+                under.Points = points;
+                over.Points = points;
+
+                foreach (var layer in new[] { under, over })
+                {
+                    Panel.SetZIndex(layer, 10000);
+                    AnnotationCanvas.Children.Add(layer);
+                    _multiOutlines.Add(layer);
+                }
             }
         }
     }
@@ -965,7 +1034,11 @@ public partial class PreviewWindow : Window
         var c2 = m.Transform(local[2]);
         var c3 = m.Transform(local[3]);
 
-        _outline.Points = new PointCollection { c0, c1, c2, c3 };
+        // Both ants layers must carry identical points, or the dash gaps stop lining up with white.
+        var outlinePoints = new PointCollection { c0, c1, c2, c3 };
+        _outlineUnder.Points = outlinePoints;
+        _outline.Points = outlinePoints;
+        _outlineUnder.Visibility = Visibility.Visible;
         _outline.Visibility = Visibility.Visible;
 
         PlaceHandle(_cornerHandles[0], c0);
@@ -1086,6 +1159,13 @@ public partial class PreviewWindow : Window
         var local = inv.Transform(mouseCanvas);
 
         var pts = _arrowPoints[path];
+
+        // Shift keeps the arrow on a clean 45° ray measured from its other end.
+        if (ShiftHeld)
+        {
+            local = SnapToAngle(_endpointIndex == 0 ? pts.to : pts.from, local);
+        }
+
         if (_endpointIndex == 0)
         {
             pts.from = local;
@@ -1131,6 +1211,16 @@ public partial class PreviewWindow : Window
     {
         double angle = Math.Atan2(mouseCanvas.Y - _rotCenter.Y, mouseCanvas.X - _rotCenter.X);
         double deltaDeg = (angle - _rotStartAngle) * 180 / Math.PI;
+
+        if (ShiftHeld)
+        {
+            // Snap the object's ABSOLUTE orientation, not the drag delta: snapping the delta would
+            // leave a shape that started at 7° sitting at 52°/97°/… Reading the existing rotation
+            // out of the start matrix lets it land squarely on 0/45/90/135/…
+            double baseDeg = Math.Atan2(_m0.M12, _m0.M11) * 180 / Math.PI;
+            double target = Math.Round((baseDeg + deltaDeg) / SnapAngleDegrees) * SnapAngleDegrees;
+            deltaDeg = target - baseDeg;
+        }
 
         var r = Matrix.Identity;
         r.RotateAt(deltaDeg, _rotCenter.X, _rotCenter.Y);

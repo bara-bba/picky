@@ -154,6 +154,20 @@
             <WrapPanel Grid.Column="1" Name="PenColorPanel" VerticalAlignment="Center" />
         </Grid>
 
+        <!-- Start with Windows (sits in the flexible row, above the footer) -->
+        <StackPanel Grid.Row="9" VerticalAlignment="Top" Margin="0,18,0,0">
+            <CheckBox Name="StartWithWindowsCheck"
+                      Style="{StaticResource DarkCheckBox}"
+                      Content="Start with Windows"
+                      Checked="StartWithWindows_Changed"
+                      Unchecked="StartWithWindows_Changed" />
+            <TextBlock Name="StartupStatusText"
+                       Foreground="{StaticResource Brush.TextTertiary}"
+                       FontSize="11"
+                       TextWrapping="Wrap"
+                       Margin="27,4,0,0" />
+        </StackPanel>
+
         <!-- Footer actions -->
         <Grid Grid.Row="10">
             <Grid.ColumnDefinitions>

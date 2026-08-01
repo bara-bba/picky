@@ -15,6 +15,13 @@ internal sealed class RecordingController
 
     public string? OutputPath { get; private set; }
 
+    /// <summary>
+    /// The rect actually being captured, in physical pixels. Not necessarily the rect passed to
+    /// <see cref="Start"/>: H.264 needs even dimensions, so width/height may each be 1px smaller.
+    /// The on-screen recording frame uses this so it lines up with the real capture area.
+    /// </summary>
+    public Rectangle Region { get; private set; }
+
     /// <summary>The bundled ffmpeg next to the app, or "ffmpeg" from PATH as a fallback.</summary>
     public static string FindFfmpeg()
     {
@@ -66,6 +73,7 @@ internal sealed class RecordingController
             _process.BeginErrorReadLine();
 
             OutputPath = outputPath;
+            Region = new Rectangle(region.X, region.Y, w, h);
             return true;
         }
         catch (Exception ex)

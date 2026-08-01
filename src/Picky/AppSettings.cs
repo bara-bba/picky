@@ -20,6 +20,12 @@ internal sealed class AppSettings
     /// <summary>Default annotation (pen) color in the editor.</summary>
     public string DefaultColor { get; set; } = "#E81123";
 
+    /// <summary>
+    /// Launch Picky when the user signs in. Mirrored into the HKCU Run key — the registry is the
+    /// real source of truth, so this is only the remembered preference.
+    /// </summary>
+    public bool StartWithWindows { get; set; }
+
     private static string DefaultCaptureFolder =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyPictures), "Picky");
 

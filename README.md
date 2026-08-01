@@ -1,51 +1,110 @@
 # Picky
 
-A Screenpresso-style screen-capture tool styled after Windows PowerToys: Fluent dark
-theme, rounded corners, Fluent-blue accent (`#0078D4`), and a system-tray workflow.
+A Screenpresso-style screen-capture tool styled after Windows PowerToys: Fluent dark theme,
+rounded corners, a configurable accent colour, and a system-tray workflow.
+
+Screenshots and screen recordings, annotation, and a gallery you can drag files out of —
+built to behave correctly on multi-monitor, mixed-DPI desktops.
 
 ## Features
-- **Tray-resident**: lives in the notification area with a drawn viewfinder icon.
-  Left-click the tray icon to open the gallery; right-click for the full menu
-  (capture, gallery, control panel, exit). Closing the control panel hides it to the
-  tray instead of quitting.
-- **Global shortcut**: a selectable system-wide hotkey triggers a region capture from
-  anywhere. Default is **Win+Shift+S**, but that combo is reserved by the Windows
-  Snipping Tool, so Picky automatically falls back to **Ctrl+Shift+S** and says so.
-  Pick from Win+Shift+S / Ctrl+Shift+S / PrtScn / Ctrl+Shift+1 in the control panel.
-  Implemented with `RegisterHotKey` against a hidden message window (`HotKeyService.cs`).
-- **Region capture** via a drag-select full-screen overlay (Win+Shift+S-style crosshair).
-- **Full-screen capture** (hides the app's own windows before grabbing).
-- **Auto-save**: every capture is written as a timestamped PNG into the chosen folder
-  (Screenpresso-style), then shown in a preview.
-- **Gallery** (`GalleryWindow`): a light-box of past screenshots as thumbnail cards
-  (newest first) with filename + timestamp; click a card to reopen it in the preview.
-- **Choosable capture folder**: pick it from the control panel ("Capture folder…") or
-  the gallery ("Change folder…"). Persisted to `%APPDATA%\Picky\settings.json`;
-  defaults to `Pictures\Picky`.
-- **Preview window** with Copy-to-clipboard, Open-folder (selects the file in Explorer),
-  and Save-As-PNG.
-- **PowerToys-matching look**: a shared Fluent dark theme (`Theme.xaml`) with named
-  brushes and accent/subtle/icon button styles (proper hover + pressed states), plus
-  immersive dark mode + rounded corners applied via `DwmSetWindowAttribute`
-  (see `Native/DwmHelper.cs`) — the same DWM attributes PowerToys' WinUI 3 utilities use.
 
-## Not yet implemented
-- Annotation tools (arrows, text, blur, highlight) — Screenpresso's core differentiator.
-  `PreviewWindow` is the natural place to add an `InkCanvas`/shape-drawing layer.
-- Scrolling capture, video/GIF recording.
+### Capture
+- **Region snip** — the desktop is frozen first, then you select on the still image, so open
+  menus and tooltips can be captured. Hover a window to auto-detect its bounds and single-click
+  to grab it, or drag a freeform marquee.
+- **Pixel loupe** — a square magnifier follows the cursor showing 15×15 source pixels at 9× with
+  a grid line on every pixel boundary, a crosshair, a marker on the exact pixel under the cursor,
+  and a live size / coordinate readout.
+- **Whole screen** or **all screens**, plus a per-display submenu in the tray when more than one
+  monitor is attached.
+- **Auto-save** — every capture is written as a timestamped PNG into the chosen folder, then the
+  gallery pops up docked in the corner with the new item selected.
+
+### Recording
+- **MP4 screen recording** of a dragged region or a whole display, via a bundled ffmpeg
+  (`gdigrab` → H.264, 15 fps, CRF 30).
+- **Breathing frame** — a red border pulses around the area being recorded. It is drawn in the
+  pixels *outside* the recorded rect, so it never appears in the video.
+- A floating bar shows elapsed time with a Stop button; finishing a recording opens the gallery
+  the same way a screenshot does.
+
+### Gallery
+- Thumbnail cards (newest first) for PNG/JPG screenshots **and** MP4 recordings; clips get a
+  poster frame extracted with ffmpeg, a play badge, and their duration.
+- **Drag files out** — select cards and drag them into Slack, a browser, an email, Explorer,
+  anything that accepts dropped files, exactly as if dragging from a folder.
+- Multi-select via Ctrl/Shift-click or a rubber-band marquee, reading-order arrow-key navigation,
+  delete to the Recycle Bin, rename, and copy-path (Ctrl+C).
+- Screenshot and Record buttons on the toolbar; right-click either one to choose the mode
+  (region / this screen / all screens).
+- Double-click opens images in the annotation editor and videos in your default player.
+
+### Annotation editor
+- **Arrow**, **Rectangle**, **Text** and **Select** tools, an 8-colour palette, stroke thickness,
+  and a font picker for text.
+- Objects stay editable after placement: move, resize from corner handles, rotate, drag arrow
+  endpoints, multi-select with a marquee, delete, undo.
+- **Hold Shift to constrain angles** to 0/45/90/135° — while drawing an arrow, while dragging an
+  arrow endpoint, or while rotating any object (the object's absolute orientation snaps, not the
+  drag delta). Shift also makes a resize uniform.
+- Selection outlines are drawn as black-and-white "marching ants" and handles have dark edges, so
+  they stay visible over any screenshot regardless of the accent colour.
+- Copy to clipboard, Open folder, and Save As PNG render at full resolution.
+
+### Preferences
+- Capture folder (persisted to `%APPDATA%\Picky\settings.json`; defaults to `Pictures\Picky`).
+- Global shortcut, chosen from **Win+Shift+S**, **Ctrl+Shift+S**, **PrtScn** or **Ctrl+Shift+1**.
+  Note Windows reserves Win+Shift+S for its own Snipping Tool — Picky reports when a combo can't
+  be claimed rather than silently downgrading. PrtScn also can't be claimed via `RegisterHotKey`,
+  so it falls back to a low-level keyboard hook.
+- Accent colour (applied live across the whole UI) and default pen colour.
+- **Start with Windows** — registers under the per-user `HKCU\…\CurrentVersion\Run` key, so no
+  elevation is needed. The registry is treated as the source of truth, so removing the entry from
+  Task Manager's Startup tab is reflected back in the checkbox.
+
+### Multi-monitor / mixed DPI
+Capture geometry is handled entirely in physical pixels obtained from Win32, because
+`SystemParameters.VirtualScreen*` and WinForms' `Screen.Bounds` divide by a *single* DPI and so
+return inconsistent numbers on a mixed-DPI desktop. The snip overlay is sized and positioned with
+`SetWindowPos` rather than WPF's DIP-based `Left`/`Top`, and selection coordinates are derived from
+the ratio between the frozen bitmap and the rendered canvas — correct for every monitor at once.
+Window auto-detect uses `DWMWA_EXTENDED_FRAME_BOUNDS` so the invisible resize border (~7px at 100%,
+12px at 175%) isn't included. Popups dock to the monitor under the cursor, not always the primary.
 
 ## Requirements
-- .NET 8 SDK with the Windows Desktop workload (`dotnet workload list` should show
-  `Microsoft.NET.Sdk.WindowsDesktop` available, or just install the .NET 8 SDK on
-  Windows, which includes it).
-- Windows 10 20H1 (build 19041)+ for the Mica/rounded-corner DWM attributes.
+- .NET 8 SDK (the Windows Desktop workload is included in the Windows SDK install).
+- Windows 10 20H1 (build 19041)+ for the Mica / rounded-corner DWM attributes.
+- `ffmpeg.exe` in `src/Picky/tools/` for recording and video thumbnails. It is git-ignored —
+  fetch it separately. Without it, screenshots still work; recording does not.
 
-**Build & run verified** on .NET SDK 8.0.423 (Windows 10 19045): builds clean (one
-benign `WFAC010` DPI-manifest warning) and runs — main window, tray icon, capture,
-auto-save, gallery, and folder picker all exercised end-to-end.
+Built and run on .NET SDK 8.0.423. Builds clean apart from one benign `WFAC010` DPI-manifest
+warning.
 
 ## Run
 ```
 cd src/Picky
 dotnet run
 ```
+
+## Diagnostics
+```
+Picky.exe --probe <folder>
+```
+Writes the detected display layout, a capture of the whole virtual desktop and of each display, and
+a window-to-display map — all in physical pixels, with the mean brightness of each grab. Reporting
+brightness next to the expected geometry separates the two failure modes that look alike: a
+wrong-sized image (a coordinate bug) versus a correctly-sized but black one (nothing was being
+rendered, e.g. a sleeping display).
+
+```
+Picky.exe --emit-icon <path>
+```
+Writes the app `.ico` (build-time helper).
+
+## Notes / limitations
+- `CaptureAllScreens` produces one flat image spanning the virtual desktop's bounding box, so on a
+  ragged layout the areas no monitor covers come out black. Capture a single display to avoid that.
+- Recording uses GDI (`gdigrab`); a display that is asleep captures as black.
+- The recording frame is drawn outside the recorded rect, so for a whole-display recording it falls
+  outside that display and is effectively invisible.
+- No scrolling capture, and no video playback inside Picky (clips open in the default player).

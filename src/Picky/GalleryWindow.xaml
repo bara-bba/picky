@@ -10,6 +10,9 @@
         Foreground="{StaticResource Brush.TextPrimary}"
         FontFamily="Segoe UI Variable, Segoe UI"
         WindowStartupLocation="CenterScreen">
+    <Window.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVisibility" />
+    </Window.Resources>
     <Grid Margin="18">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
@@ -22,22 +25,85 @@
                    FontSize="22"
                    FontWeight="SemiBold" />
 
+        <!-- Toolbar: actions on the left, folder path fills the remaining space on the right. -->
         <Grid Grid.Row="1" Margin="0,12,0,14">
             <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="*" />
-                <ColumnDefinition Width="Auto" />
-                <ColumnDefinition Width="Auto" />
-                <ColumnDefinition Width="Auto" />
-                <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
 
-            <Border Grid.Column="0"
+            <!-- Left-click takes the default; right-click picks the mode. -->
+            <Button Grid.Column="0"
+                    Name="ScreenshotButton"
+                    Content="⛶  Screenshot"
+                    Click="Screenshot_Click"
+                    Style="{StaticResource SubtleButton}"
+                    ToolTip="Click to snip a region — right-click for full screen"
+                    Margin="0,0,8,0">
+                <Button.ContextMenu>
+                    <ContextMenu Opened="ContextMenu_Opened" Closed="ContextMenu_Closed">
+                        <MenuItem Header="Drag a region…" Click="ShotRegion_Click" />
+                        <MenuItem Header="This screen" Click="ShotThisScreen_Click" />
+                        <MenuItem Header="All screens" Click="ShotAllScreens_Click" />
+                    </ContextMenu>
+                </Button.ContextMenu>
+            </Button>
+
+            <Button Grid.Column="1"
+                    Name="RecordButton"
+                    Content="⏺  Record"
+                    Click="Record_Click"
+                    Style="{StaticResource SubtleButton}"
+                    ToolTip="Click to record a region — right-click for full screen"
+                    Margin="0,0,8,0">
+                <Button.ContextMenu>
+                    <ContextMenu Opened="ContextMenu_Opened" Closed="ContextMenu_Closed">
+                        <MenuItem Header="Record a region…" Click="RecordRegion_Click" />
+                        <MenuItem Header="Record this screen" Click="RecordScreen_Click" />
+                    </ContextMenu>
+                </Button.ContextMenu>
+            </Button>
+
+            <Border Grid.Column="2"
+                    Width="1"
+                    Background="{StaticResource Brush.Stroke}"
+                    Margin="2,2,10,2" />
+
+            <Button Grid.Column="3"
+                    Content="Change folder…"
+                    Click="ChangeFolder_Click"
+                    Style="{StaticResource SubtleButton}"
+                    Width="118"
+                    Margin="0,0,8,0" />
+            <Button Grid.Column="4"
+                    Content="Open folder"
+                    Click="OpenFolder_Click"
+                    Style="{StaticResource SubtleButton}"
+                    Width="118"
+                    Margin="0,0,8,0" />
+            <Button Grid.Column="5"
+                    Content="Refresh"
+                    Click="RefreshButton_Click"
+                    Style="{StaticResource SubtleButton}"
+                    Margin="0,0,8,0" />
+            <Button Grid.Column="6"
+                    Content="⚙  Preferences"
+                    Click="Preferences_Click"
+                    Style="{StaticResource SubtleButton}"
+                    Margin="0,0,10,0" />
+
+            <Border Grid.Column="7"
                     Background="{StaticResource Brush.Card}"
                     BorderBrush="{StaticResource Brush.Stroke}"
                     BorderThickness="1"
                     CornerRadius="4"
                     Padding="12,0"
-                    Margin="0,0,10,0"
                     VerticalAlignment="Stretch">
                 <TextBlock Name="FolderPathText"
                            Foreground="{StaticResource Brush.TextSecondary}"
@@ -45,28 +111,6 @@
                            VerticalAlignment="Center"
                            TextTrimming="CharacterEllipsis" />
             </Border>
-
-            <Button Grid.Column="1"
-                    Content="Change folder…"
-                    Click="ChangeFolder_Click"
-                    Style="{StaticResource SubtleButton}"
-                    Width="118"
-                    Margin="0,0,8,0" />
-            <Button Grid.Column="2"
-                    Content="Open folder"
-                    Click="OpenFolder_Click"
-                    Style="{StaticResource SubtleButton}"
-                    Width="118"
-                    Margin="0,0,8,0" />
-            <Button Grid.Column="3"
-                    Content="Refresh"
-                    Click="RefreshButton_Click"
-                    Style="{StaticResource SubtleButton}"
-                    Margin="0,0,8,0" />
-            <Button Grid.Column="4"
-                    Content="⚙  Preferences"
-                    Click="Preferences_Click"
-                    Style="{StaticResource SubtleButton}" />
         </Grid>
 
         <Grid Grid.Row="2">
@@ -87,7 +131,7 @@
                      PreviewMouseRightButtonDown="ThumbnailList_PreviewMouseRightButtonDown"
                      ContextMenuOpening="ThumbnailList_ContextMenuOpening">
                 <ListBox.ContextMenu>
-                    <ContextMenu Closed="ContextMenu_Closed">
+                    <ContextMenu Opened="ContextMenu_Opened" Closed="ContextMenu_Closed">
                         <MenuItem Name="RenameMenuItem" Header="Rename…" Click="Rename_Click" />
                         <MenuItem Header="Copy path" Click="CopyPath_Click" />
                     </ContextMenu>
@@ -116,7 +160,7 @@
                                             <Setter TargetName="CardBorder" Property="Background" Value="{StaticResource Brush.CardHover}" />
                                         </Trigger>
                                         <Trigger Property="IsSelected" Value="True">
-                                            <Setter TargetName="CardBorder" Property="BorderBrush" Value="{StaticResource Brush.Accent}" />
+                                            <Setter TargetName="CardBorder" Property="BorderBrush" Value="{DynamicResource Brush.Accent}" />
                                         </Trigger>
                                     </ControlTemplate.Triggers>
                                 </ControlTemplate>
@@ -131,9 +175,40 @@
                                     Background="#FF1B1B1B"
                                     Height="150"
                                     ClipToBounds="True">
-                                <Image Source="{Binding Thumbnail}"
-                                       Stretch="Uniform"
-                                       Margin="6" />
+                                <Grid>
+                                    <Image Source="{Binding Thumbnail}"
+                                           Stretch="Uniform"
+                                           Margin="6" />
+
+                                    <!-- Play affordance, so a clip is obviously a clip. -->
+                                    <Border Visibility="{Binding IsVideo, Converter={StaticResource BoolToVisibility}}"
+                                            Width="44"
+                                            Height="44"
+                                            CornerRadius="22"
+                                            Background="#B0000000"
+                                            BorderBrush="#40FFFFFF"
+                                            BorderThickness="1"
+                                            HorizontalAlignment="Center"
+                                            VerticalAlignment="Center">
+                                        <Path Data="M 0,0 L 12,7 L 0,14 Z"
+                                              Fill="White"
+                                              Margin="3,0,0,0"
+                                              HorizontalAlignment="Center"
+                                              VerticalAlignment="Center" />
+                                    </Border>
+
+                                    <Border Visibility="{Binding IsVideo, Converter={StaticResource BoolToVisibility}}"
+                                            Background="#C0000000"
+                                            CornerRadius="3"
+                                            Padding="5,1"
+                                            Margin="0,0,8,8"
+                                            HorizontalAlignment="Right"
+                                            VerticalAlignment="Bottom">
+                                        <TextBlock Text="{Binding DurationText}"
+                                                   Foreground="White"
+                                                   FontSize="11" />
+                                    </Border>
+                                </Grid>
                             </Border>
                             <StackPanel Margin="10,8,10,9">
                                 <TextBlock Text="{Binding FileName}"
@@ -154,8 +229,7 @@
             <Canvas Name="MarqueeCanvas" IsHitTestVisible="False" ClipToBounds="True">
                 <Rectangle Name="MarqueeRect"
                            Visibility="Collapsed"
-                           Fill="#330078D4"
-                           Stroke="{StaticResource Brush.Accent}"
+                           Stroke="{DynamicResource Brush.Accent}"
                            StrokeThickness="1" />
             </Canvas>
 

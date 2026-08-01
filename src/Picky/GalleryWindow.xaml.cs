@@ -1,6 +1,8 @@
 using System.Collections.ObjectModel;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
+using System.Runtime.CompilerServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
@@ -22,6 +24,16 @@ public partial class GalleryWindow : Window
     private bool _marqueeActive;
     private bool _marqueeDragging;
     private List<object> _preDragSelection = new();
+
+    // Drag-out state: the gallery acts like a folder, so selected cards can be dragged into
+    // any app that accepts dropped files.
+    private Point _dragStart;
+    private bool _dragArmed;
+    private bool _dragging;
+
+    // Set when a mouse-down on an already-selected card was swallowed to preserve a
+    // multi-selection; the deferred "collapse to just this card" runs on mouse-up instead.
+    private ListBoxItem? _pendingSelectionCollapse;
 
     // Keyboard navigation state: the moving end (_currentIndex) and the fixed end
     // (_selectionAnchor) of a Shift+Arrow selection, walked in flat reading order.
@@ -45,6 +57,12 @@ public partial class GalleryWindow : Window
         DwmHelper.ApplyPowerToysChrome(this);
         Icon = ((App)System.Windows.Application.Current).CurrentIconSource();
         ThumbnailList.ItemsSource = _items;
+
+        // Translucent accent for the marquee fill (was a hardcoded blue, which ignored the accent).
+        var wash = AccentTheme.Current;
+        wash.A = 0x33;
+        MarqueeRect.Fill = new SolidColorBrush(wash);
+
         Refresh();
     }
 
@@ -97,7 +115,9 @@ public partial class GalleryWindow : Window
     protected override void OnDeactivated(EventArgs e)
     {
         base.OnDeactivated(e);
-        if (AutoCloseOnDeactivate && !_suppressAutoClose && !_modalOpen)
+
+        // A drag into another app deactivates us; closing mid-drag would abort the drop.
+        if (AutoCloseOnDeactivate && !_suppressAutoClose && !_modalOpen && !_dragging)
         {
             Close();
         }
@@ -112,8 +132,13 @@ public partial class GalleryWindow : Window
 
         if (Directory.Exists(folder))
         {
-            var files = new DirectoryInfo(folder)
-                .GetFiles("*.png")
+            var directory = new DirectoryInfo(folder);
+
+            var files = CaptureItem.SupportedPatterns
+                .SelectMany(pattern => directory.GetFiles(pattern))
+                // "*.jpg" can also match ".jpeg" via 8.3 short names, so de-duplicate by path.
+                .GroupBy(f => f.FullName, StringComparer.OrdinalIgnoreCase)
+                .Select(g => g.First())
                 .OrderByDescending(f => f.LastWriteTime);
 
             foreach (var file in files)
@@ -123,16 +148,26 @@ public partial class GalleryWindow : Window
         }
 
         EmptyState.Visibility = _items.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        UpdateRecordButton();
     }
 
-    // Double-click a thumbnail to open it in the full preview.
+    // Double-click a thumbnail to open it: images go to the annotating preview, clips to
+    // whatever plays video by default (PreviewWindow is an image editor and can't show them).
     private void Thumbnail_DoubleClick(object sender, MouseButtonEventArgs e)
     {
-        if (FindAncestor<ListBoxItem>(e.OriginalSource as DependencyObject)?.DataContext is CaptureItem item
-            && File.Exists(item.Path))
+        if (FindAncestor<ListBoxItem>(e.OriginalSource as DependencyObject)?.DataContext is not CaptureItem item
+            || !File.Exists(item.Path))
         {
-            PreviewWindow.FromFile(item.Path).Show();
+            return;
         }
+
+        if (item.IsVideo)
+        {
+            Process.Start(new ProcessStartInfo(item.Path) { UseShellExecute = true });
+            return;
+        }
+
+        PreviewWindow.FromFile(item.Path).Show();
     }
 
     // Right-click selects the card under the cursor (unless it's already part of the
@@ -301,6 +336,12 @@ public partial class GalleryWindow : Window
         _suppressAutoClose = false;
         Activate();
     }
+
+    /// <summary>
+    /// Toolbar menus take focus away from the docked gallery, which would otherwise auto-close and
+    /// take the menu with it. (The thumbnail menu does this via ContextMenuOpening.)
+    /// </summary>
+    private void ContextMenu_Opened(object sender, RoutedEventArgs e) => _suppressAutoClose = true;
 
     private void ThumbnailList_PreviewKeyDown(object sender, KeyEventArgs e)
     {
@@ -490,9 +531,32 @@ public partial class GalleryWindow : Window
     private void ThumbnailList_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
         var src = e.OriginalSource as DependencyObject;
+        var card = FindAncestor<ListBoxItem>(src);
 
-        // A click on an actual card (or the scrollbar) is normal ListBox selection/scrolling.
-        if (FindAncestor<ListBoxItem>(src) != null || FindAncestor<ScrollBar>(src) != null)
+        if (card != null)
+        {
+            // Pressing a card arms a possible drag-out. Selection itself is left to the ListBox
+            // so Ctrl/Shift-click keep working; we only take over once the pointer really moves.
+            _dragStart = e.GetPosition(ThumbnailList);
+            _dragArmed = true;
+
+            bool modified = (Keyboard.Modifiers & (ModifierKeys.Control | ModifierKeys.Shift)) != 0;
+
+            // Explorer semantics: pressing an already-selected card inside a multi-selection must
+            // NOT collapse that selection, or dragging more than one file would be impossible.
+            // Swallow the press and defer the collapse to mouse-up (skipped if a drag begins).
+            // Only for single clicks, so double-click-to-open still reaches the ListBox.
+            if (!modified && card.IsSelected && ThumbnailList.SelectedItems.Count > 1 && e.ClickCount == 1)
+            {
+                _pendingSelectionCollapse = card;
+                e.Handled = true;
+            }
+
+            return;
+        }
+
+        // A click on the scrollbar is normal scrolling.
+        if (FindAncestor<ScrollBar>(src) != null)
         {
             return;
         }
@@ -509,6 +573,20 @@ public partial class GalleryWindow : Window
 
     private void ThumbnailList_PreviewMouseMove(object sender, MouseEventArgs e)
     {
+        // Drag-out takes priority: a press that began on a card becomes a file drag once the
+        // pointer clears the system drag threshold.
+        if (_dragArmed && !_dragging && e.LeftButton == MouseButtonState.Pressed)
+        {
+            var moved = e.GetPosition(ThumbnailList) - _dragStart;
+
+            if (Math.Abs(moved.X) >= SystemParameters.MinimumHorizontalDragDistance
+                || Math.Abs(moved.Y) >= SystemParameters.MinimumVerticalDragDistance)
+            {
+                StartFileDrag();
+                return;
+            }
+        }
+
         if (!_marqueeActive || e.LeftButton != MouseButtonState.Pressed)
         {
             return;
@@ -548,6 +626,18 @@ public partial class GalleryWindow : Window
 
     private void ThumbnailList_PreviewMouseLeftButtonUp(object sender, MouseButtonEventArgs e)
     {
+        _dragArmed = false;
+
+        // The press was swallowed to keep a multi-selection intact and no drag followed, so it
+        // was really just a click: collapse to the card that was pressed, as Explorer does.
+        if (_pendingSelectionCollapse is { } card)
+        {
+            _pendingSelectionCollapse = null;
+            ThumbnailList.SelectedItems.Clear();
+            card.IsSelected = true;
+            card.Focus();
+        }
+
         if (!_marqueeActive)
         {
             return;
@@ -557,6 +647,55 @@ public partial class GalleryWindow : Window
         _marqueeDragging = false;
         MarqueeRect.Visibility = Visibility.Collapsed;
         ThumbnailList.ReleaseMouseCapture();
+    }
+
+    /// <summary>
+    /// Hands the selected captures to the OS as a file drop, so the gallery can be dragged into
+    /// Slack, a browser, an email, Explorer — anything that accepts files from a folder.
+    /// </summary>
+    private void StartFileDrag()
+    {
+        _dragArmed = false;
+
+        // A drag supersedes the deferred click-collapse; the whole selection travels.
+        _pendingSelectionCollapse = null;
+
+        var paths = ThumbnailList.SelectedItems
+            .Cast<CaptureItem>()
+            .Select(item => item.Path)
+            .Where(File.Exists)
+            .ToArray();
+
+        if (paths.Length == 0)
+        {
+            return;
+        }
+
+        var data = new DataObject(DataFormats.FileDrop, paths);
+        // Some targets (editors, terminals) take text rather than files.
+        data.SetData(DataFormats.Text, string.Join(Environment.NewLine, paths));
+
+        // Marquee state must not survive into the nested drag loop, or the rectangle would be
+        // left visible with the mouse still captured.
+        _marqueeActive = false;
+        _marqueeDragging = false;
+        MarqueeRect.Visibility = Visibility.Collapsed;
+        if (ThumbnailList.IsMouseCaptured)
+        {
+            ThumbnailList.ReleaseMouseCapture();
+        }
+
+        _dragging = true;
+        try
+        {
+            // Copy only. Allowing Move would let a target relocate the original file out of the
+            // capture folder, silently emptying the gallery.
+            DragDrop.DoDragDrop(ThumbnailList, data, DragDropEffects.Copy);
+        }
+        finally
+        {
+            _dragging = false;
+        }
     }
 
     private Rect ItemBounds(ListBoxItem container)
@@ -576,6 +715,77 @@ public partial class GalleryWindow : Window
     }
 
     private void RefreshButton_Click(object sender, RoutedEventArgs e) => Refresh();
+
+    // --- Capture / record from the gallery toolbar ---
+
+    /// <summary>
+    /// Hides the gallery, waits for the hide to reach the screen, then runs the action — otherwise
+    /// the gallery itself lands in the screenshot or the recording. Deliberately does not re-show:
+    /// a capture re-opens the gallery with the new item, and a recording must keep it out of frame.
+    /// </summary>
+    private void RunHidden(Action action)
+    {
+        Hide();
+
+        var timer = new System.Windows.Threading.DispatcherTimer
+        {
+            Interval = TimeSpan.FromMilliseconds(180),
+        };
+        timer.Tick += (_, _) =>
+        {
+            timer.Stop();
+            action();
+        };
+        timer.Start();
+    }
+
+    /// <summary>The running app instance. Not named "Owner" — that would hide Window.Owner.</summary>
+    private static App PickyApp => (App)System.Windows.Application.Current;
+
+    // Left-click default: drag a region (the most common case).
+    private void Screenshot_Click(object sender, RoutedEventArgs e) => RunHidden(CaptureController.CaptureRegion);
+
+    private void ShotRegion_Click(object sender, RoutedEventArgs e) => RunHidden(CaptureController.CaptureRegion);
+
+    private void ShotThisScreen_Click(object sender, RoutedEventArgs e) => RunHidden(CaptureController.CaptureCurrentScreen);
+
+    private void ShotAllScreens_Click(object sender, RoutedEventArgs e) => RunHidden(CaptureController.CaptureAllScreens);
+
+    /// <summary>Left-click toggles: stop if recording, otherwise record a dragged region.</summary>
+    private void Record_Click(object sender, RoutedEventArgs e)
+    {
+        if (PickyApp.IsRecording)
+        {
+            PickyApp.StopRecordingFromUi();
+            UpdateRecordButton();
+            return;
+        }
+
+        RunHidden(() => PickyApp.StartRecording(null));
+    }
+
+    private void RecordRegion_Click(object sender, RoutedEventArgs e)
+    {
+        if (PickyApp.IsRecording)
+        {
+            return;
+        }
+
+        RunHidden(() => PickyApp.StartRecording(null));
+    }
+
+    private void RecordScreen_Click(object sender, RoutedEventArgs e)
+    {
+        if (PickyApp.IsRecording)
+        {
+            return;
+        }
+
+        RunHidden(() => PickyApp.StartRecording(MonitorInfo.FromCursor().Bounds));
+    }
+
+    private void UpdateRecordButton()
+        => RecordButton.Content = PickyApp.IsRecording ? "⏹  Stop" : "⏺  Record";
 
     private void Preferences_Click(object sender, RoutedEventArgs e)
         => ((App)System.Windows.Application.Current).ShowMainWindow();
@@ -617,31 +827,116 @@ public partial class GalleryWindow : Window
 }
 
 /// <summary>One entry in the gallery: a lazily-decoded thumbnail plus metadata.</summary>
-public sealed class CaptureItem
+public sealed class CaptureItem : INotifyPropertyChanged
 {
+    /// <summary>Search patterns the gallery enumerates, images and clips alike.</summary>
+    internal static readonly string[] SupportedPatterns = { "*.png", "*.jpg", "*.jpeg", "*.mp4" };
+
+    private static readonly string[] VideoExtensions = { ".mp4", ".mkv", ".webm", ".mov" };
+
+    private ImageSource? _thumbnail;
+    private string _durationText = string.Empty;
+
     public string Path { get; }
     public string FileName { get; }
     public string TimeText { get; }
-    public ImageSource Thumbnail { get; }
+
+    /// <summary>True for recordings, which get a play badge and open in an external player.</summary>
+    public bool IsVideo { get; }
+
+    /// <summary>Clip length (e.g. "5:48"), filled in once ffmpeg has been consulted.</summary>
+    public string DurationText
+    {
+        get => _durationText;
+        private set
+        {
+            _durationText = value;
+            OnPropertyChanged();
+        }
+    }
+
+    public ImageSource? Thumbnail
+    {
+        get => _thumbnail;
+        private set
+        {
+            _thumbnail = value;
+            OnPropertyChanged();
+        }
+    }
 
     public CaptureItem(string path, DateTime time)
     {
         Path = path;
         FileName = System.IO.Path.GetFileName(path);
         TimeText = time.ToString("g");
-        Thumbnail = LoadThumbnail(path);
+        IsVideo = VideoExtensions.Contains(System.IO.Path.GetExtension(path).ToLowerInvariant());
+
+        if (IsVideo)
+        {
+            DurationText = "video";
+            LoadVideoPosterAsync();
+        }
+        else
+        {
+            Thumbnail = LoadBitmap(path);
+        }
     }
 
-    private static ImageSource LoadThumbnail(string path)
+    /// <summary>
+    /// A poster frame costs an ffmpeg round-trip, so it loads off the UI thread and fills in when
+    /// ready — otherwise opening a folder of clips would freeze the gallery.
+    /// </summary>
+    private void LoadVideoPosterAsync()
     {
-        var image = new BitmapImage();
-        image.BeginInit();
-        image.CacheOption = BitmapCacheOption.OnLoad; // decode now, don't lock the file
-        image.CreateOptions = BitmapCreateOptions.IgnoreColorProfile;
-        image.DecodePixelWidth = 260;
-        image.UriSource = new Uri(path);
-        image.EndInit();
-        image.Freeze();
-        return image;
+        var path = Path;
+
+        Task.Run(() =>
+        {
+            var info = VideoThumbnailer.Probe(path);
+            var poster = info.ThumbnailPath is null ? null : LoadBitmap(info.ThumbnailPath);
+            var label = info.Duration > TimeSpan.Zero ? FormatDuration(info.Duration) : "video";
+
+            // Frozen above, so handing it to the UI thread is safe.
+            System.Windows.Application.Current?.Dispatcher.Invoke(() =>
+            {
+                if (poster is not null)
+                {
+                    Thumbnail = poster;
+                }
+
+                DurationText = label;
+            });
+        });
     }
+
+    private static string FormatDuration(TimeSpan duration) => duration.TotalHours >= 1
+        ? $"{(int)duration.TotalHours}:{duration.Minutes:00}:{duration.Seconds:00}"
+        : $"{duration.Minutes}:{duration.Seconds:00}";
+
+    private static ImageSource? LoadBitmap(string path)
+    {
+        try
+        {
+            var image = new BitmapImage();
+            image.BeginInit();
+            image.CacheOption = BitmapCacheOption.OnLoad; // decode now, don't lock the file
+            image.CreateOptions = BitmapCreateOptions.IgnoreColorProfile;
+            image.DecodePixelWidth = 260;
+            image.UriSource = new Uri(path);
+            image.EndInit();
+            image.Freeze(); // required: may be created on a background thread
+            return image;
+        }
+        catch
+        {
+            // Truncated or unreadable file — show the card without a preview.
+            return null;
+        }
+    }
+
+    public event PropertyChangedEventHandler? PropertyChanged;
+
+    private void OnPropertyChanged([CallerMemberName] string? propertyName = null)
+        => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
 }

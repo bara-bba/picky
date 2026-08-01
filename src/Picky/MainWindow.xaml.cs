@@ -13,6 +13,7 @@ namespace Picky;
 public partial class MainWindow : Window
 {
     private bool _initializing = true;
+    private bool _initializingStartup;
 
     public MainWindow()
     {
@@ -26,6 +27,55 @@ public partial class MainWindow : Window
         InitHotKeyPicker();
         AccentHexInput.Text = AccentTheme.ToHex(AccentTheme.Current);
         BuildPenColors();
+        InitStartWithWindows();
+    }
+
+    /// <summary>
+    /// Reflects the *registry* rather than the saved preference: the user can remove the entry from
+    /// Task Manager's Startup tab or Windows Settings without Picky being told, so the Run key is
+    /// the source of truth. Any drift is written back to settings.
+    /// </summary>
+    private void InitStartWithWindows()
+    {
+        bool actuallyEnabled = StartupRegistration.IsEnabled();
+
+        _initializingStartup = true;
+        StartWithWindowsCheck.IsChecked = actuallyEnabled;
+        _initializingStartup = false;
+
+        if (App.Settings.StartWithWindows != actuallyEnabled)
+        {
+            App.Settings.StartWithWindows = actuallyEnabled;
+            App.Settings.Save();
+        }
+
+        StartupStatusText.Text = actuallyEnabled
+            ? "Picky will launch when you sign in."
+            : string.Empty;
+    }
+
+    private void StartWithWindows_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_initializingStartup)
+        {
+            return;
+        }
+
+        bool wanted = StartWithWindowsCheck.IsChecked == true;
+
+        if (StartupRegistration.SetEnabled(wanted))
+        {
+            App.Settings.StartWithWindows = wanted;
+            App.Settings.Save();
+            StartupStatusText.Text = wanted ? "Picky will launch when you sign in." : string.Empty;
+            return;
+        }
+
+        // Registry refused — put the checkbox back so it can't claim something untrue.
+        _initializingStartup = true;
+        StartWithWindowsCheck.IsChecked = !wanted;
+        _initializingStartup = false;
+        StartupStatusText.Text = "Couldn't update the Windows startup entry.";
     }
 
     private void BuildPenColors()
@@ -74,10 +124,14 @@ public partial class MainWindow : Window
 
     private void HighlightPenColor(string hex)
     {
+        // Accent, read live from resources, so the indicator matches every other selection cue in
+        // the app instead of being a fixed white ring.
+        var accent = (Brush)System.Windows.Application.Current.Resources["Brush.Accent"];
+
         foreach (Border ring in PenColorPanel.Children)
         {
             ring.BorderBrush = string.Equals((string)ring.Tag, hex, System.StringComparison.OrdinalIgnoreCase)
-                ? (Brush)System.Windows.Application.Current.Resources["Brush.TextPrimary"]
+                ? accent
                 : Brushes.Transparent;
         }
     }

@@ -1,4 +1,5 @@
-using System.Windows;
+﻿using System.Windows;
+using Picky.Native;
 using WinForms = System.Windows.Forms;
 
 namespace Picky;
@@ -11,7 +12,9 @@ public partial class App : Application
     private HotKeyService _hotKeys = null!;
 
     private readonly RecordingController _recorder = new();
+    private readonly RecordingBorder _recordBorder = new();
     private WinForms.ToolStripMenuItem _recordMenuItem = null!;
+    private WinForms.ToolStripMenuItem _captureScreenMenu = null!;
     private Window? _recordBar;
     private System.Windows.Threading.DispatcherTimer? _recordTimer;
     private DateTime _recordStart;
@@ -38,6 +41,16 @@ public partial class App : Application
             return;
         }
 
+        // Diagnostic helper: `Picky.exe --probe <folder>` writes the detected monitor layout
+        // plus a capture of the whole virtual desktop and of each display, then exits.
+        // Handy when a multi-monitor setup misbehaves.
+        if (e.Args.Length == 2 && e.Args[0] == "--probe")
+        {
+            Diagnostics.RunProbe(e.Args[1]);
+            Shutdown();
+            return;
+        }
+
         Settings = AppSettings.Load();
 
         if (AccentTheme.TryParse(Settings.AccentColor, out var accent))
@@ -55,7 +68,7 @@ public partial class App : Application
         _trayIcon = CreateTrayIcon();
     }
 
-    /// <summary>Accent-tinted app glyph for Window.Icon (title bar + taskbar).</summary>
+/// <summary>Accent-tinted app glyph for Window.Icon (title bar + taskbar).</summary>
     internal System.Windows.Media.Imaging.BitmapSource CurrentIconSource()
         => AppIcon.CreateImageSource(ToDrawingColor(AccentTheme.Current), ToDrawingColor(AccentTheme.OnAccent));
 
@@ -65,6 +78,7 @@ public partial class App : Application
         {
             _recorder.Stop();
         }
+        _recordBorder.Hide();
         _hotKeys?.Dispose();
         _trayIcon?.Dispose();
         base.OnExit(e);
@@ -136,11 +150,26 @@ public partial class App : Application
     {
         // Default light tray menu.
         var menu = new WinForms.ContextMenuStrip();
-        menu.Items.Add("Preferences", null, (_, _) => ShowMainWindow());
+
+        menu.Items.Add("Capture region…", null, (_, _) => RunAfterMenuClosed(CaptureController.CaptureRegion));
+        menu.Items.Add("Capture this screen", null, (_, _) => RunAfterMenuClosed(CaptureController.CaptureCurrentScreen));
+        menu.Items.Add("Capture all screens", null, (_, _) => RunAfterMenuClosed(CaptureController.CaptureAllScreens));
+
+        _captureScreenMenu = new WinForms.ToolStripMenuItem("Capture one screen");
+        menu.Items.Add(_captureScreenMenu);
+
+        menu.Items.Add(new WinForms.ToolStripSeparator());
+
         _recordMenuItem = new WinForms.ToolStripMenuItem("Record region…", null, (_, _) => ToggleRecording());
         menu.Items.Add(_recordMenuItem);
+
         menu.Items.Add(new WinForms.ToolStripSeparator());
+        menu.Items.Add("Preferences", null, (_, _) => ShowMainWindow());
         menu.Items.Add("Exit", null, (_, _) => Shutdown());
+
+        // Displays can be plugged, unplugged, rotated or rearranged while we sit in the
+        // tray, so the per-display list is rebuilt each time the menu opens.
+        menu.Opening += (_, _) => RebuildCaptureScreenMenu();
 
         var icon = new WinForms.NotifyIcon
         {
@@ -151,7 +180,7 @@ public partial class App : Application
         };
 
         // Left-click pops the gallery in the lower-right corner (dismiss-on-click-away);
-        // right-click shows the Preferences / Exit menu.
+        // right-click shows the capture / Preferences / Exit menu.
         icon.MouseClick += (_, args) =>
         {
             if (args.Button == WinForms.MouseButtons.Left)
@@ -161,6 +190,49 @@ public partial class App : Application
         };
 
         return icon;
+    }
+
+    /// <summary>Repopulates the "Capture one screen" submenu from the live display list.</summary>
+    private void RebuildCaptureScreenMenu()
+    {
+        _captureScreenMenu.DropDownItems.Clear();
+
+        var monitors = MonitorInfo.All();
+
+        // Pointless on a single-display setup — "Capture this screen" already covers it.
+        _captureScreenMenu.Visible = monitors.Count > 1;
+
+        foreach (var monitor in monitors)
+        {
+            var target = monitor; // capture per-iteration, not the loop variable
+            _captureScreenMenu.DropDownItems.Add(
+                monitor.Label,
+                null,
+                (_, _) => RunAfterMenuClosed(() => CaptureController.CaptureScreen(target)));
+        }
+    }
+
+    /// <summary>
+    /// Defers a capture until the tray menu has actually left the screen.
+    /// The menu is a WinForms popup rather than a WPF <see cref="Window"/>, so the capture
+    /// flow's hide-our-own-windows pass can't see it; without this delay the menu itself
+    /// ends up baked into the screenshot.
+    /// </summary>
+    private void RunAfterMenuClosed(Action capture)
+    {
+        _trayIcon.ContextMenuStrip?.Close();
+
+        // A DispatcherTimer (not Thread.Sleep) so the menu can finish painting itself away.
+        var timer = new System.Windows.Threading.DispatcherTimer
+        {
+            Interval = TimeSpan.FromMilliseconds(180),
+        };
+        timer.Tick += (_, _) =>
+        {
+            timer.Stop();
+            capture();
+        };
+        timer.Start();
     }
 
     public void ShowMainWindow()
@@ -183,31 +255,59 @@ public partial class App : Application
         }
     }
 
-    private void StartRecording()
+    /// <summary>True while a recording is in progress.</summary>
+    internal bool IsRecording => _recorder.IsRecording;
+
+    /// <summary>Stops an in-progress recording (the gallery's Record/Stop button).</summary>
+    internal void StopRecordingFromUi() => StopRecording();
+
+    /// <summary>
+    /// Starts a recording. Pass a rect in physical pixels to record it directly (a whole display,
+    /// say), or null to let the user drag one out on the snip overlay.
+    /// </summary>
+    internal void StartRecording(Rectangle? region = null)
     {
-        // Pick the region on the live (dimmed) screen — no freeze, since we record live.
-        var overlay = new RegionSelectWindow();
-        if (overlay.ShowDialog() != true)
+        if (_recorder.IsRecording)
         {
             return;
+        }
+
+        Rectangle target;
+
+        if (region is { } fixedRegion)
+        {
+            target = fixedRegion;
+        }
+        else
+        {
+            var overlay = new RegionSelectWindow();
+            if (overlay.ShowDialog() != true)
+            {
+                return;
+            }
+
+            target = overlay.SelectedRegion;
         }
 
         var folder = Settings.EnsureCaptureFolder();
         var path = System.IO.Path.Combine(folder, $"Picky_{DateTime.Now:yyyyMMdd_HHmmss}.mp4");
 
-        if (!_recorder.Start(overlay.SelectedRegion, path, out var error))
+        if (!_recorder.Start(target, path, out var error))
         {
             WinForms.MessageBox.Show($"Couldn't start recording:\n{error}", "Picky");
             return;
         }
 
         _recordMenuItem.Text = "⏹ Stop recording";
+        // Frame the area actually being captured (even-adjusted), drawn just outside it.
+        _recordBorder.Show(_recorder.Region);
         ShowRecordBar();
     }
 
     private void StopRecording()
     {
         var path = _recorder.Stop();
+        _recordBorder.Hide();
         _recordMenuItem.Text = "Record region…";
 
         _recordTimer?.Stop();
@@ -217,7 +317,9 @@ public partial class App : Application
 
         if (path is not null && System.IO.File.Exists(path))
         {
-            _trayIcon.ShowBalloonTip(3000, "Picky", $"Recording saved: {System.IO.Path.GetFileName(path)}", WinForms.ToolTipIcon.Info);
+            // Same feedback as a screenshot: pop the docked gallery with the new clip selected,
+            // rather than a balloon tip that disappears before you can act on it.
+            ShowGalleryDocked(path);
         }
     }
 
@@ -278,10 +380,7 @@ public partial class App : Application
             Content = shell,
         };
         _recordBar.Loaded += (_, _) =>
-        {
-            _recordBar.Left = (SystemParameters.WorkArea.Width - _recordBar.ActualWidth) / 2 + SystemParameters.WorkArea.Left;
-            _recordBar.Top = SystemParameters.WorkArea.Top + 8;
-        };
+            WindowPlacement.CenterTop(_recordBar!, MonitorInfo.FromCursor().WorkArea, marginPx: 8);
         _recordBar.Show();
 
         _recordTimer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
@@ -345,12 +444,15 @@ public partial class App : Application
             System.Windows.Threading.DispatcherPriority.Loaded);
     }
 
-    /// <summary>Positions a window flush to the lower-right of the working area (above the taskbar).</summary>
+    /// <summary>
+    /// Positions a window flush to the lower-right of the work area of the monitor the pointer
+    /// is on (above the taskbar). <c>SystemParameters.WorkArea</c> only ever describes the
+    /// primary display, so using it would pin the popup there even when the capture happened
+    /// on another screen.
+    /// </summary>
     private static void DockLowerRight(Window window)
     {
-        var work = SystemParameters.WorkArea;
         window.WindowStartupLocation = WindowStartupLocation.Manual;
-        window.Left = work.Right - window.Width;
-        window.Top = work.Bottom - window.Height;
+        WindowPlacement.DockToLowerRight(window, MonitorInfo.FromCursor().WorkArea);
     }
 }
