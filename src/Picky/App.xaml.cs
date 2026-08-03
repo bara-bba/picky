@@ -31,6 +31,16 @@ public partial class App : Application
     {
         base.OnStartup(e);
 
+        // A tray-resident app must not vanish because of one stray UI exception — that is exactly
+        // how the gallery's re-entrant Close() took the whole process down, leaving no tray icon
+        // and no explanation. Log and carry on; the log keeps such bugs diagnosable rather than
+        // silently swallowed.
+        DispatcherUnhandledException += (_, args) =>
+        {
+            LogError(args.Exception);
+            args.Handled = true;
+        };
+
         // Build-time helper: `Picky.exe --emit-icon <path>` writes the app .ico and exits.
         if (e.Args.Length == 2 && e.Args[0] == "--emit-icon")
         {
@@ -69,6 +79,29 @@ public partial class App : Application
     }
 
 /// <summary>Accent-tinted app glyph for Window.Icon (title bar + taskbar).</summary>
+    /// <summary>
+    /// Appends an unhandled exception to <c>%LocalAppData%\Picky\errors.log</c>. Logging must never
+    /// itself throw, hence the blanket catch.
+    /// </summary>
+    private static void LogError(Exception exception)
+    {
+        try
+        {
+            var folder = System.IO.Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "Picky");
+            System.IO.Directory.CreateDirectory(folder);
+
+            System.IO.File.AppendAllText(
+                System.IO.Path.Combine(folder, "errors.log"),
+                $"{DateTime.Now:yyyy-MM-dd HH:mm:ss}{Environment.NewLine}{exception}{Environment.NewLine}{Environment.NewLine}");
+        }
+        catch
+        {
+            // Nothing useful to do if even logging fails.
+        }
+    }
+
     internal System.Windows.Media.Imaging.BitmapSource CurrentIconSource()
         => AppIcon.CreateImageSource(ToDrawingColor(AccentTheme.Current), ToDrawingColor(AccentTheme.OnAccent));
 

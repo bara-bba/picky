@@ -51,6 +51,14 @@ public partial class GalleryWindow : Window
     // closing, which would otherwise clear _suppressAutoClose out from under the dialog.
     private bool _modalOpen;
 
+    /// <summary>
+    /// True once a close is under way. <see cref="Close"/> deactivates the window, which re-enters
+    /// <see cref="OnDeactivated"/>; calling Close again while WPF is mid-close throws
+    /// InvalidOperationException, and because that runs on a WPF callback it takes the whole
+    /// process down rather than just the window.
+    /// </summary>
+    private bool _closing;
+
     public GalleryWindow()
     {
         InitializeComponent();
@@ -112,13 +120,27 @@ public partial class GalleryWindow : Window
         }
     }
 
+    protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
+    {
+        _closing = true;
+        base.OnClosing(e);
+    }
+
     protected override void OnDeactivated(EventArgs e)
     {
         base.OnDeactivated(e);
 
+        // Closing is itself a deactivation, so this handler re-enters during Close(). Bail out or
+        // the second Close() throws mid-close and kills the process.
+        if (_closing)
+        {
+            return;
+        }
+
         // A drag into another app deactivates us; closing mid-drag would abort the drop.
         if (AutoCloseOnDeactivate && !_suppressAutoClose && !_modalOpen && !_dragging)
         {
+            _closing = true;
             Close();
         }
     }
