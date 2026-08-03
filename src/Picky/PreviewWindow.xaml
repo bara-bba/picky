@@ -134,12 +134,14 @@
                             Content="Copy"
                             Click="CopyButton_Click"
                             Style="{StaticResource SubtleButton}"
+                            ToolTip="Copy the annotated image to the clipboard  (Ctrl+C)"
                             Padding="14,6"
                             Margin="0,0,8,0" />
                     <Button Name="SaveButton"
                             Content="Save As…"
                             Click="SaveButton_Click"
                             Style="{StaticResource AccentButton}"
+                            ToolTip="Save to a new file.  Ctrl+S saves over the original and closes."
                             Padding="14,6" />
                 </StackPanel>
             </Grid>

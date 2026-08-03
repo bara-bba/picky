@@ -522,13 +522,32 @@ public partial class PreviewWindow : Window
     protected override void OnKeyDown(KeyEventArgs e)
     {
         bool typing = _activeText is not null || Keyboard.FocusedElement is TextBox;
+        bool ctrl = (Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control;
         bool plain = (Keyboard.Modifiers & (ModifierKeys.Control | ModifierKeys.Alt)) == 0;
 
+        // While typing a text annotation, Ctrl+C/Ctrl+S belong to the TextBox, not to us.
         if (!typing)
         {
-            if (e.Key == Key.Z && (Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control)
+            if (ctrl && e.Key == Key.Z)
             {
                 Undo_Click(this, new RoutedEventArgs());
+                e.Handled = true;
+            }
+            else if (ctrl && e.Key == Key.S)
+            {
+                e.Handled = true;
+
+                // Save straight over the original and close — the "annotate and be done" path.
+                // SaveToOriginal clears _dirty, so OnClosing won't also prompt to save.
+                if (SaveToOriginal())
+                {
+                    Close();
+                    return; // stop routing input through a window that is closing
+                }
+            }
+            else if (ctrl && e.Key == Key.C)
+            {
+                CopyToClipboard();
                 e.Handled = true;
             }
             else if (e.Key == Key.Delete && _selection.Count > 0)
@@ -1457,8 +1476,13 @@ public partial class PreviewWindow : Window
         return true;
     }
 
-    private void CopyButton_Click(object sender, RoutedEventArgs e)
-        => Clipboard.SetImage(RenderEdited());
+    private void CopyButton_Click(object sender, RoutedEventArgs e) => CopyToClipboard();
+
+    /// <summary>
+    /// Copies the flattened image (screenshot + annotations) to the clipboard. Image only — the
+    /// edits may not be on disk yet, so there is no file to offer.
+    /// </summary>
+    private void CopyToClipboard() => Clipboard.SetImage(RenderEdited());
 
     private void OpenFolderButton_Click(object sender, RoutedEventArgs e)
     {
