@@ -133,6 +133,8 @@
                 <ListBox.ContextMenu>
                     <ContextMenu Opened="ContextMenu_Opened" Closed="ContextMenu_Closed">
                         <MenuItem Name="RenameMenuItem" Header="Rename…" Click="Rename_Click" />
+                        <MenuItem Header="Copy image" InputGestureText="Ctrl+C" Click="CopyImage_Click" />
+                        <MenuItem Header="Copy file" InputGestureText="Ctrl+Shift+C" Click="CopyFile_Click" />
                         <MenuItem Header="Copy path" Click="CopyPath_Click" />
                     </ContextMenu>
                 </ListBox.ContextMenu>

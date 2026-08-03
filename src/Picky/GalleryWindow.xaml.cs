@@ -205,10 +205,113 @@ public partial class GalleryWindow : Window
 
     private void CopyPath_Click(object sender, RoutedEventArgs e) => CopySelectedPaths();
 
+    private void CopyImage_Click(object sender, RoutedEventArgs e) => CopySelectedImage();
+
+    private void CopyFile_Click(object sender, RoutedEventArgs e) => CopySelectedFiles();
+
+    private string[] SelectedExistingPaths() => ThumbnailList.SelectedItems
+        .Cast<CaptureItem>()
+        .Select(item => item.Path)
+        .Where(File.Exists)
+        .ToArray();
+
+    private static readonly string[] ImageExtensions = { ".png", ".jpg", ".jpeg", ".bmp", ".gif" };
+
+    /// <summary>True when exactly one image is selected — the only case where "copy image" applies.</summary>
+    private bool SingleImageSelected()
+    {
+        var paths = SelectedExistingPaths();
+        return paths.Length == 1
+            && ImageExtensions.Contains(Path.GetExtension(paths[0]).ToLowerInvariant());
+    }
+
+    /// <summary>
+    /// Copies the picture itself — and <b>only</b> the picture.
+    ///
+    /// <para>One clipboard payload cannot satisfy every target, because each app picks the first
+    /// format it recognises and they disagree about precedence. Notably Electron/VS Code-based apps
+    /// (Kiro, Slack, Teams) treat <c>CF_HDROP</c> as "insert the file path as text", so bundling the
+    /// file alongside the image makes them paste a path and never look at the pixels. Text does the
+    /// same to everything else. So each command puts exactly one representation on the clipboard and
+    /// the shortcut states the intent: Ctrl+C = image, Ctrl+Shift+C = file, menu = path.</para>
+    /// </summary>
+    private void CopySelectedImage()
+    {
+        var paths = SelectedExistingPaths();
+        if (paths.Length == 0)
+        {
+            return;
+        }
+
+        // Nothing sensible to rasterise for a video or a multi-selection — copy the file(s) instead.
+        if (!SingleImageSelected())
+        {
+            CopySelectedFiles();
+            return;
+        }
+
+        try
+        {
+            var image = new BitmapImage();
+            image.BeginInit();
+            image.CacheOption = BitmapCacheOption.OnLoad; // decode now, don't hold the file open
+            image.CreateOptions = BitmapCreateOptions.IgnoreColorProfile;
+            image.UriSource = new Uri(paths[0]);
+            image.EndInit();
+            image.Freeze();
+
+            var data = new DataObject();
+            data.SetImage(image); // CF_BITMAP -> Windows synthesises CF_DIB / CF_DIBV5
+
+            // Chromium/Electron targets prefer a "PNG" stream; hand over the bytes unchanged so the
+            // original encoding (and alpha) survives instead of a re-encoded DIB.
+            if (string.Equals(Path.GetExtension(paths[0]), ".png", StringComparison.OrdinalIgnoreCase))
+            {
+                data.SetData("PNG", new MemoryStream(File.ReadAllBytes(paths[0])));
+            }
+
+            Clipboard.SetDataObject(data, copy: true);
+        }
+        catch
+        {
+            // Undecodable image — at least put the file on the clipboard.
+            CopySelectedFiles();
+        }
+    }
+
+    /// <summary>
+    /// Copies the selected captures as <b>files</b> (CF_HDROP) — the shape Explorer uses, for
+    /// pasting into a folder or attaching to a mail. No image and no text: see
+    /// <see cref="CopySelectedImage"/> for why mixing formats breaks paste targets.
+    /// </summary>
+    private void CopySelectedFiles()
+    {
+        var paths = SelectedExistingPaths();
+        if (paths.Length == 0)
+        {
+            return;
+        }
+
+        var files = new System.Collections.Specialized.StringCollection();
+        files.AddRange(paths);
+
+        var data = new DataObject();
+        data.SetFileDropList(files);
+
+        // Mark it a copy, so a paste into Explorer can never *move* the original out of the
+        // capture folder. DROPEFFECT_COPY = 1.
+        data.SetData(
+            "Preferred DropEffect",
+            new MemoryStream(BitConverter.GetBytes((uint)DragDropEffects.Copy)));
+
+        // copy: true flushes to the OS clipboard, so the data survives Picky exiting.
+        Clipboard.SetDataObject(data, copy: true);
+    }
+
+    /// <summary>Copies just the path text (Ctrl+Shift+C / "Copy path").</summary>
     private void CopySelectedPaths()
     {
-        var paths = ThumbnailList.SelectedItems.Cast<CaptureItem>().Select(i => i.Path);
-        var text = string.Join(Environment.NewLine, paths);
+        var text = string.Join(Environment.NewLine, SelectedExistingPaths());
         if (!string.IsNullOrEmpty(text))
         {
             Clipboard.SetText(text);
@@ -375,10 +478,19 @@ public partial class GalleryWindow : Window
             return;
         }
 
-        // Ctrl+C copies the selected file path(s) — skips the right-click menu.
+        // Ctrl+C copies the picture (what a chat/document/Kiro paste wants);
+        // Ctrl+Shift+C copies the file (what Explorer and mail attachments want).
         if (e.Key == Key.C && (Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control)
         {
-            CopySelectedPaths();
+            if ((Keyboard.Modifiers & ModifierKeys.Shift) == ModifierKeys.Shift)
+            {
+                CopySelectedFiles();
+            }
+            else
+            {
+                CopySelectedImage();
+            }
+
             e.Handled = true;
             return;
         }
