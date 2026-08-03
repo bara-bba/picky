@@ -14,7 +14,17 @@
     <Version>0.3.0</Version>
     <AssemblyVersion>0.3.0.0</AssemblyVersion>
     <FileVersion>0.3.0.0</FileVersion>
+    <!--
+      Velopack must initialise before any UI, so we supply our own Main in Program.cs instead of the
+      one WPF generates from App.xaml. StartupObject picks ours when both exist.
+    -->
+    <StartupObject>Picky.Program</StartupObject>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Installer + delta auto-update. Also provides the `vpk` packaging CLI. -->
+    <PackageReference Include="Velopack" Version="1.2.0" />
+  </ItemGroup>
 
   <ItemGroup>
     <Using Remove="System.Windows.Forms" />

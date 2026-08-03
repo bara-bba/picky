@@ -1,0 +1,50 @@
+name: CI
+
+# Build gate for everyday pushes. Deliberately does NOT fetch ffmpeg: it isn't needed to
+# compile, and pulling ~100 MB on every push would be wasteful.
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+
+jobs:
+  build:
+    # WPF requires a Windows runner. Free with unlimited minutes on public repos.
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Build
+        run: dotnet build src/Picky/Picky.csproj -c Release
+
+      # Exercises real code headlessly: monitor enumeration, virtual-screen geometry and
+      # screen capture. Asserts a report was produced, which a crash or a geometry
+      # exception would prevent.
+      - name: Smoke test (--probe diagnostic)
+        shell: pwsh
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP 'probe'
+          $exe = 'src/Picky/bin/Release/net8.0-windows10.0.19041.0/Picky.exe'
+          & $exe --probe $out
+          # --probe shuts the app down itself; give it a moment to finish writing.
+          for ($i = 0; $i -lt 30 -and -not (Test-Path (Join-Path $out 'monitors.txt')); $i++) {
+            Start-Sleep -Milliseconds 500
+          }
+          $report = Join-Path $out 'monitors.txt'
+          if (-not (Test-Path $report)) { throw 'probe produced no monitors.txt' }
+          Write-Host '--- probe report ---'
+          Get-Content $report | Select-Object -First 20
+
+      - name: Upload probe report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: probe-report
+          path: ${{ runner.temp }}/probe
+          if-no-files-found: ignore

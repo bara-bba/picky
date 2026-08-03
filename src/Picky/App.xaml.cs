@@ -1,11 +1,16 @@
 ﻿using System.Windows;
 using Picky.Native;
+using Velopack;
+using Velopack.Sources;
 using WinForms = System.Windows.Forms;
 
 namespace Picky;
 
 public partial class App : Application
 {
+    /// <summary>Update feed. Velopack reads the assets attached to GitHub Releases here.</summary>
+    private const string RepositoryUrl = "https://github.com/bara-bba/picky";
+
     private WinForms.NotifyIcon _trayIcon = null!;
     private MainWindow _mainWindow = null!;
     private GalleryWindow? _gallery;
@@ -15,6 +20,11 @@ public partial class App : Application
     private readonly RecordingBorder _recordBorder = new();
     private WinForms.ToolStripMenuItem _recordMenuItem = null!;
     private WinForms.ToolStripMenuItem _captureScreenMenu = null!;
+
+    // Staged auto-update, if one has been downloaded and is waiting for a restart.
+    private WinForms.ToolStripMenuItem _updateMenuItem = null!;
+    private UpdateManager? _updateManager;
+    private UpdateInfo? _pendingUpdate;
     private Window? _recordBar;
     private System.Windows.Threading.DispatcherTimer? _recordTimer;
     private DateTime _recordStart;
@@ -76,6 +86,71 @@ public partial class App : Application
         _mainWindow = new MainWindow();
 
         _trayIcon = CreateTrayIcon();
+
+        // Fire-and-forget: never block startup on a network call.
+        _ = CheckForUpdatesAsync();
+    }
+
+    /// <summary>
+    /// Looks for a newer release and downloads it in the background.
+    ///
+    /// <para>Deliberately silent: a tray utility shouldn't interrupt with dialogs, so a staged update
+    /// surfaces only as a tray menu entry plus a single balloon. Nothing is applied until the user
+    /// asks, because restarting mid-capture or mid-recording would lose work.</para>
+    ///
+    /// <para>No-ops entirely unless running from a Velopack install, so debugging out of
+    /// <c>bin\Debug</c> never touches the network.</para>
+    /// </summary>
+    private async Task CheckForUpdatesAsync()
+    {
+        try
+        {
+            var manager = new UpdateManager(new GithubSource(RepositoryUrl, null, false));
+
+            if (!manager.IsInstalled)
+            {
+                return;
+            }
+
+            var update = await manager.CheckForUpdatesAsync();
+            if (update is null)
+            {
+                return;
+            }
+
+            await manager.DownloadUpdatesAsync(update);
+
+            _updateManager = manager;
+            _pendingUpdate = update;
+
+            var version = update.TargetFullRelease.Version.ToString();
+            _updateMenuItem.Text = $"Restart to update to v{version}";
+            _updateMenuItem.Visible = true;
+            _trayIcon.ShowBalloonTip(
+                4000, "Picky", $"Update v{version} downloaded — restart to apply.", WinForms.ToolTipIcon.Info);
+        }
+        catch (Exception ex)
+        {
+            // Offline, rate-limited, or no release published yet. Log it; never nag the user.
+            LogError(ex);
+        }
+    }
+
+    /// <summary>Applies a staged update and relaunches.</summary>
+    private void ApplyPendingUpdate()
+    {
+        if (_updateManager is null || _pendingUpdate is null)
+        {
+            return;
+        }
+
+        // Finish a recording first — restarting would otherwise orphan ffmpeg and truncate the MP4.
+        if (_recorder.IsRecording)
+        {
+            StopRecording();
+        }
+
+        _updateManager.ApplyUpdatesAndRestart(_pendingUpdate);
     }
 
 /// <summary>Accent-tinted app glyph for Window.Icon (title bar + taskbar).</summary>
@@ -183,6 +258,13 @@ public partial class App : Application
     {
         // Default light tray menu.
         var menu = new WinForms.ContextMenuStrip();
+
+        // Only appears once an update has been downloaded and is waiting for a restart.
+        _updateMenuItem = new WinForms.ToolStripMenuItem("Restart to update", null, (_, _) => ApplyPendingUpdate())
+        {
+            Visible = false,
+        };
+        menu.Items.Add(_updateMenuItem);
 
         menu.Items.Add("Capture region…", null, (_, _) => RunAfterMenuClosed(CaptureController.CaptureRegion));
         menu.Items.Add("Capture this screen", null, (_, _) => RunAfterMenuClosed(CaptureController.CaptureCurrentScreen));
