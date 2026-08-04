@@ -100,6 +100,14 @@ public partial class RegionSelectWindow : Window
         {
             ApplyPhysicalBounds(); // re-assert in case WPF re-applied its own layout
             PositionHint();
+
+            // WPF's Activate()/Focus() alone aren't reliably enough here: ApplyPhysicalBounds
+            // uses SWP_NOACTIVATE (deliberately, so repositioning never steals focus mid-drag),
+            // and this window is shown right after CaptureController hides every other Picky
+            // window, so there's no guarantee Windows hands keyboard focus to it without an
+            // explicit foreground request. Without this, Esc silently does nothing until the
+            // user clicks or moves the mouse over the overlay first.
+            SetForegroundWindow(_selfHandle);
             Activate();
             Focus();
 
@@ -473,4 +481,7 @@ public partial class RegionSelectWindow : Window
     [DllImport("user32.dll")]
     private static extern bool SetWindowPos(
         IntPtr hWnd, IntPtr hWndInsertAfter, int x, int y, int cx, int cy, uint uFlags);
+
+    [DllImport("user32.dll")]
+    private static extern bool SetForegroundWindow(IntPtr hWnd);
 }

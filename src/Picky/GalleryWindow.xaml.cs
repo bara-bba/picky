@@ -470,6 +470,15 @@ public partial class GalleryWindow : Window
 
     private void ThumbnailList_PreviewKeyDown(object sender, KeyEventArgs e)
     {
+        // Esc dismisses the popup — same effect as clicking away from the docked lower-right
+        // gallery, but also works for the plain centered gallery (tray menu / Preferences).
+        if (e.Key == Key.Escape)
+        {
+            Close();
+            e.Handled = true;
+            return;
+        }
+
         // Canc / Delete removes the selected captures (to the Recycle Bin, so they're recoverable).
         if (e.Key == Key.Delete)
         {
