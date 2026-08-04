@@ -410,6 +410,35 @@ shadowing when adding convenience properties to a `Window` subclass.
 hex lists (`MainWindow.BuildPenColors` / `PreviewWindow.BuildSwatches`) that must be kept in sync.
 
 
+## Snapshot — 2026-08-04 (Ctrl+W to close editor; verified Esc already cancels capture/record)
+
+**Ask:** "add features to ctrl+w editor images and to press esc while trying to execute a screenshot
+or screen record to exit without doing anything."
+
+**Ctrl+W (new)** — `PreviewWindow.OnKeyDown`: added an `else if (ctrl && e.Key == Key.W)` branch
+alongside the existing Ctrl+Z/S/C handlers, guarded by the same `!typing` check so it doesn't fire
+while a text annotation box has focus. Calls `Close()` — the *same* path as the title-bar close
+button — so `OnClosing`'s unsaved-changes prompt (Save / Save a copy… / Don't save / Cancel) still
+runs; Ctrl+W does not bypass it.
+
+**Esc-to-cancel (investigated, already correct, no change needed):** Both the screenshot region-pick
+and the screen-record region-pick reuse the same `RegionSelectWindow`, which already has
+`KeyDown="Window_KeyDown"` → `Cancel()` → `DialogResult = false` (mirrors right-click-to-cancel).
+Traced both call sites to confirm the `false` result is honoured:
+- `CaptureController.CaptureRegion()`: `accepted = overlay.ShowDialog() == true; ... if (!accepted) return;` — returns before cropping or saving anything.
+- `App.StartRecording(region: null)`: `if (overlay.ShowDialog() != true) return;` — returns before
+  `_recorder.Start(...)` is ever called, so ffmpeg never launches.
+So pressing Esc on the overlay already aborts cleanly for both flows with zero side effects. Nothing
+to fix — this was a verification task, not a bug.
+
+**Verified:** `dotnet build -v q` clean (only the pre-existing `WFAC010` warning). Needed
+`$env:DOTNET_ROOT = "$env:LocalAppData\Microsoft\dotnet"` + prepend to PATH first — no system-wide
+SDK on this host (see the 2026-07-31 multi-monitor snapshot for why). Did not runtime-test Ctrl+W by
+launching the app in this session (no running Picky instance / display interaction available) —
+logic mirrors the already-working Ctrl+Z/S/C branches exactly, same `!typing` guard, same
+`Close()` call the title-bar X uses.
+
+
 ## Snapshot — 2026-07-31 (on-screen frame around the recorded region)
 
 **Goal:** show a border marking what's being recorded.

@@ -236,6 +236,14 @@ public partial class PreviewWindow : Window
         RectTool.IsChecked = true;
         HideOverlay();
         UpdatePropertyPanels();
+
+        // Grab activation + keyboard focus on open, so Ctrl+W / Ctrl+S / tool shortcuts work
+        // immediately without an extra click into the window first.
+        Loaded += (_, _) =>
+        {
+            Activate();
+            Focus();
+        };
     }
 
     private void AddFixedHandle(UIElement element)
@@ -559,6 +567,14 @@ public partial class PreviewWindow : Window
             else if (plain && e.Key == Key.A) { ArrowTool.IsChecked = true; e.Handled = true; }
             else if (plain && e.Key == Key.T) { TextTool.IsChecked = true; e.Handled = true; }
             else if (plain && e.Key == Key.V) { SelectTool.IsChecked = true; e.Handled = true; }
+            else if (ctrl && e.Key == Key.W)
+            {
+                // Same exit path as the title bar close button, so the unsaved-changes
+                // prompt (OnClosing) still applies.
+                e.Handled = true;
+                Close();
+                return;
+            }
         }
 
         base.OnKeyDown(e);
