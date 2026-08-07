@@ -5,7 +5,7 @@ using System.IO;
 namespace Picky;
 
 /// <summary>
-/// Records a screen region to a small H.264 MP4 by driving a bundled ffmpeg (gdigrab).
+/// Records a screen region to a small H.264 MP4 by driving ffmpeg (gdigrab).
 /// </summary>
 internal sealed class RecordingController
 {
@@ -22,11 +22,43 @@ internal sealed class RecordingController
     /// </summary>
     public Rectangle Region { get; private set; }
 
-    /// <summary>The bundled ffmpeg next to the app, or "ffmpeg" from PATH as a fallback.</summary>
+    /// <summary>Resolves ffmpeg: %APPDATA%\Picky, next to the app, else "ffmpeg" from PATH.</summary>
     public static string FindFfmpeg()
     {
+        var appData = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Picky", "ffmpeg.exe");
+        if (File.Exists(appData))
+        {
+            return appData;
+        }
+
         var local = Path.Combine(AppContext.BaseDirectory, "ffmpeg.exe");
         return File.Exists(local) ? local : "ffmpeg";
+    }
+
+    /// <summary>Whether ffmpeg can actually be launched (installed / on PATH).</summary>
+    public static bool IsAvailable()
+    {
+        try
+        {
+            using var probe = Process.Start(new ProcessStartInfo(FindFfmpeg(), "-version")
+            {
+                CreateNoWindow = true,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            });
+            if (probe is null)
+            {
+                return false;
+            }
+            probe.WaitForExit(3000);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     public bool Start(Rectangle region, string outputPath, out string? error)

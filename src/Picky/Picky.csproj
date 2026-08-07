@@ -30,8 +30,10 @@
     <Using Remove="System.Windows.Forms" />
   </ItemGroup>
 
-  <!-- Bundle ffmpeg next to the app for MP4 recording (git-ignored; fetch separately). -->
-  <ItemGroup Condition="Exists('tools\ffmpeg.exe')">
+  <!-- Debug only: copy a local ffmpeg next to the app so recording works while developing.
+       Release builds ship WITHOUT ffmpeg — it's a runtime prerequisite (winget install ffmpeg),
+       which keeps the installer download small. -->
+  <ItemGroup Condition="'$(Configuration)' == 'Debug' And Exists('tools\ffmpeg.exe')">
     <None Include="tools\ffmpeg.exe" Link="ffmpeg.exe">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>

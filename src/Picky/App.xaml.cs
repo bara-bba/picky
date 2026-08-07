@@ -25,6 +25,7 @@ public partial class App : Application
     private WinForms.ToolStripMenuItem _updateMenuItem = null!;
     private UpdateManager? _updateManager;
     private UpdateInfo? _pendingUpdate;
+    private System.Windows.Threading.DispatcherTimer? _updateTimer;
     private Window? _recordBar;
     private System.Windows.Threading.DispatcherTimer? _recordTimer;
     private DateTime _recordStart;
@@ -89,6 +90,16 @@ public partial class App : Application
 
         // Fire-and-forget: never block startup on a network call.
         _ = CheckForUpdatesAsync();
+
+        // A tray utility can stay open for days, so a single startup check would miss any release
+        // published in the meantime. Re-check every 6 hours until an update is staged (the check
+        // then no-ops, and ApplyPendingUpdate restarts into the new build).
+        _updateTimer = new System.Windows.Threading.DispatcherTimer
+        {
+            Interval = TimeSpan.FromHours(6),
+        };
+        _updateTimer.Tick += (_, _) => _ = CheckForUpdatesAsync();
+        _updateTimer.Start();
     }
 
     /// <summary>
@@ -103,6 +114,14 @@ public partial class App : Application
     /// </summary>
     private async Task CheckForUpdatesAsync()
     {
+        // Already downloaded and waiting for a restart — nothing more to do. Stop the periodic
+        // timer so it doesn't re-check (and re-download) the same release.
+        if (_pendingUpdate is not null)
+        {
+            _updateTimer?.Stop();
+            return;
+        }
+
         try
         {
             var manager = new UpdateManager(new GithubSource(RepositoryUrl, null, false));
@@ -384,6 +403,24 @@ public partial class App : Application
     {
         if (_recorder.IsRecording)
         {
+            return;
+        }
+
+        if (!RecordingController.IsAvailable())
+        {
+            var choice = WinForms.MessageBox.Show(
+                "Screen recording needs ffmpeg, which isn't installed.\n\n" +
+                "Install it with:  winget install ffmpeg\n(or download it and add it to your PATH).\n\n" +
+                "Open the ffmpeg download page now?",
+                "Picky — ffmpeg required",
+                WinForms.MessageBoxButtons.YesNo,
+                WinForms.MessageBoxIcon.Information);
+
+            if (choice == WinForms.DialogResult.Yes)
+            {
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(
+                    "https://www.gyan.dev/ffmpeg/builds/") { UseShellExecute = true });
+            }
             return;
         }
 

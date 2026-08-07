@@ -31,22 +31,6 @@ jobs:
           "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           Write-Host "Releasing $v"
 
-      # ffmpeg is git-ignored (~100 MB) but required for recording and video thumbnails, so it
-      # has to be fetched here to end up in the installer. Without it Picky still takes
-      # screenshots; only recording degrades.
-      - name: Fetch ffmpeg
-        shell: pwsh
-        run: |
-          $zip = Join-Path $env:RUNNER_TEMP 'ffmpeg.zip'
-          Invoke-WebRequest -Uri 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip' -OutFile $zip
-          $dir = Join-Path $env:RUNNER_TEMP 'ffmpeg'
-          Expand-Archive $zip -DestinationPath $dir -Force
-          $exe = Get-ChildItem $dir -Recurse -Filter ffmpeg.exe | Select-Object -First 1
-          if (-not $exe) { throw 'ffmpeg.exe not found in the downloaded archive' }
-          New-Item -ItemType Directory -Force -Path src/Picky/tools | Out-Null
-          Copy-Item $exe.FullName src/Picky/tools/ffmpeg.exe -Force
-          Write-Host ("ffmpeg: {0:N1} MB" -f ((Get-Item src/Picky/tools/ffmpeg.exe).Length / 1MB))
-
       - name: Build
         run: dotnet build src/Picky/Picky.csproj -c Release
 
@@ -61,11 +45,22 @@ jobs:
           if (-not (Test-Path (Join-Path $out 'monitors.txt'))) { throw 'probe produced no monitors.txt' }
           Get-Content (Join-Path $out 'monitors.txt') | Select-Object -First 20
 
-      # Self-contained so users don't need the .NET Desktop Runtime. Large (~280 MB), but
-      # Velopack ships deltas afterwards, so only the first install pays for it.
+      # The app renders its icon at runtime (no .ico in the repo). `--emit-icon` writes that exact
+      # icon to a file so the installer, shortcuts and Add/Remove entry all use the real app icon.
+      - name: Emit app icon
+        shell: pwsh
+        run: |
+          & 'src/Picky/bin/Release/net8.0-windows10.0.19041.0/Picky.exe' --emit-icon "$PWD/app.ico"
+          for ($i = 0; $i -lt 20 -and -not (Test-Path app.ico); $i++) { Start-Sleep -Milliseconds 250 }
+          if (-not (Test-Path app.ico)) { throw '--emit-icon produced no app.ico' }
+
+      # Framework-dependent: ~30 MB instead of ~280 MB self-contained. The .NET 8 Desktop Runtime
+      # is a prerequisite, which Velopack installs on first run via --framework below. ffmpeg is no
+      # longer bundled either (runtime prerequisite: winget install ffmpeg) — recording and video
+      # thumbnails degrade gracefully without it; screenshots are unaffected.
       - name: Publish
         run: >
-          dotnet publish src/Picky/Picky.csproj -c Release -r win-x64 --self-contained true
+          dotnet publish src/Picky/Picky.csproj -c Release -r win-x64 --self-contained false
           -o publish -p:Version=${{ steps.ver.outputs.version }}
 
       - name: Install vpk
@@ -85,6 +80,8 @@ jobs:
           --packAuthors "${{ github.repository_owner }}"
           --packVersion ${{ steps.ver.outputs.version }}
           --packDir publish --mainExe Picky.exe
+          --icon app.ico
+          --framework net8.0-x64-desktop
 
       - name: Show artefacts
         shell: pwsh
