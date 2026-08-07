@@ -37,6 +37,7 @@ public partial class PreviewWindow : Window
 
     private MediaBrush _color = MediaBrushes.Red;
     private double _thickness = 5;
+    private bool _fill;
     private double _fontSize = 20;
     private FontFamily _fontFamily = new("Bebas Neue");
 
@@ -341,7 +342,7 @@ public partial class PreviewWindow : Window
             if (el is WpfShape shape)
             {
                 shape.Stroke = brush;
-                if (shape is WpfPath)
+                if (shape is WpfPath || (shape is WpfRectangle rect && IsFilled(rect)))
                 {
                     shape.Fill = brush;
                 }
@@ -439,8 +440,10 @@ public partial class PreviewWindow : Window
         UIElement? primary = _selection.Count == 1 ? _selection[0] : null;
         bool textCtx = primary is TextBlock || (_selection.Count == 0 && _tool == Tool.Text);
         bool shapeCtx = primary is WpfShape || (_selection.Count == 0 && _tool is Tool.Arrow or Tool.Rectangle);
+        bool rectCtx = primary is WpfRectangle || (_selection.Count == 0 && _tool == Tool.Rectangle);
 
         ShapeGroup.Visibility = shapeCtx ? Visibility.Visible : Visibility.Collapsed;
+        FillCheck.Visibility = rectCtx ? Visibility.Visible : Visibility.Collapsed;
         TextGroup.Visibility = textCtx ? Visibility.Visible : Visibility.Collapsed;
     }
 
@@ -468,6 +471,28 @@ public partial class PreviewWindow : Window
             }
         }
         UpdateSelectionOverlay();
+    }
+
+    /// <summary>Whether a rectangle is solid-filled (as opposed to a transparent outline).</summary>
+    private static bool IsFilled(WpfRectangle rect)
+        => rect.Fill is SolidColorBrush { Color.A: not 0 };
+
+    private void Fill_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_syncingProps)
+        {
+            return;
+        }
+
+        _fill = FillCheck.IsChecked == true;
+        foreach (var el in _selection)
+        {
+            if (el is WpfRectangle rect)
+            {
+                rect.Fill = _fill ? _color : MediaBrushes.Transparent;
+                _dirty = true;
+            }
+        }
     }
 
     private void Font_Changed(object sender, SelectionChangedEventArgs e)
@@ -675,6 +700,16 @@ public partial class PreviewWindow : Window
 
         if (hit is not null)
         {
+            // If the object under the cursor is already selected, a press-drag moves it (same as
+            // the Select tool), rather than starting a new shape on top of it. A press on an
+            // unselected object still selects it (on release) or draws (on drag), as before.
+            if (_selection.Contains(hit))
+            {
+                _movingBody = true;
+                _lastMove = p;
+                return;
+            }
+
             _pendingHit = hit;
             return;
         }
@@ -712,7 +747,7 @@ public partial class PreviewWindow : Window
             {
                 Stroke = _color,
                 StrokeThickness = _thickness,
-                Fill = MediaBrushes.Transparent,
+                Fill = _fill ? _color : MediaBrushes.Transparent,
             };
             AddAnnotation(rect);
             _active = rect;
@@ -1270,6 +1305,10 @@ public partial class PreviewWindow : Window
         {
             SelectSwatchByBrush(shape.Stroke);
             SelectComboByValue(ThicknessCombo, shape.StrokeThickness);
+            if (shape is WpfRectangle rect)
+            {
+                FillCheck.IsChecked = IsFilled(rect);
+            }
         }
         else if (element is TextBlock text)
         {

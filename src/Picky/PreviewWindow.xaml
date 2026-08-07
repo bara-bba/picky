@@ -89,6 +89,11 @@
                             <ComboBoxItem>5</ComboBoxItem>
                             <ComboBoxItem>8</ComboBoxItem>
                         </ComboBox>
+
+                        <!-- Rectangle-only: fills the shape solid with the current colour. -->
+                        <CheckBox Name="FillCheck" Style="{StaticResource DarkCheckBox}"
+                                  Content="Fill" Margin="2,10,0,0"
+                                  Checked="Fill_Changed" Unchecked="Fill_Changed" />
                     </StackPanel>
 
                     <StackPanel Name="TextGroup" VerticalAlignment="Top">
