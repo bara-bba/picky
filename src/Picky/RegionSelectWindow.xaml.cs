@@ -49,6 +49,15 @@ public partial class RegionSelectWindow : Window
     private bool _movedEnough;
     private IntPtr _selfHandle;
 
+    /// <summary>Global keyboard hook that makes Esc work without OS keyboard focus.</summary>
+    private IntPtr _escHook = IntPtr.Zero;
+
+    /// <summary>Held so the delegate handed to Win32 isn't collected while the hook is live.</summary>
+    private LowLevelKeyboardProc? _escProc;
+
+    /// <summary>Set once cancellation is under way, so it can only happen once.</summary>
+    private bool _closing;
+
     /// <summary>Bounds (physical px) of the window currently under the cursor, for click-to-grab.</summary>
     private Rectangle _candidatePx;
 
@@ -126,6 +135,14 @@ public partial class RegionSelectWindow : Window
         base.OnSourceInitialized(e);
         _selfHandle = new WindowInteropHelper(this).Handle;
         ApplyPhysicalBounds();
+        InstallEscapeHook();
+    }
+
+    /// <summary>Tears the hook down deterministically, however the overlay was dismissed.</summary>
+    protected override void OnClosed(EventArgs e)
+    {
+        RemoveEscapeHook();
+        base.OnClosed(e);
     }
 
     private void ApplyPhysicalBounds()
@@ -299,8 +316,16 @@ public partial class RegionSelectWindow : Window
 
     /// <summary>
     /// Keeps the loupe next to the cursor without sitting on top of it, flipping side or vertical
-    /// position rather than sliding off the desktop.
+    /// position rather than sliding off the display.
     /// </summary>
+    /// <remarks>
+    /// Bounds come from the monitor under the cursor, never from <c>RootCanvas</c>. The canvas spans
+    /// the whole virtual desktop, which is a bounding box: with displays of different heights or
+    /// offsets, large parts of it belong to no monitor. Testing the flip against the canvas meant
+    /// that near the bottom of a shorter or vertically-offset display there was still "room" below
+    /// in canvas terms, so the loupe never flipped up and was drawn into that dead area — visible
+    /// nowhere. Clamping per-monitor keeps it on the screen the user is actually looking at.
+    /// </remarks>
     private void PositionLens(Point canvas)
     {
         const double gap = 22;
@@ -309,20 +334,24 @@ public partial class RegionSelectWindow : Window
         double w = LensPanel.ActualWidth;
         double h = LensPanel.ActualHeight;
 
+        var monitor = MonitorInfo.FromPoint(CanvasToPx(canvas)).Bounds;
+        var min = PxToCanvas(monitor.Left, monitor.Top);
+        var max = PxToCanvas(monitor.Right, monitor.Bottom);
+
         double x = canvas.X + gap;
-        if (x + w > RootCanvas.ActualWidth)
+        if (x + w > max.X)
         {
             x = canvas.X - gap - w;
         }
 
         double y = canvas.Y + gap;
-        if (y + h > RootCanvas.ActualHeight)
+        if (y + h > max.Y)
         {
             y = canvas.Y - gap - h;
         }
 
-        Canvas.SetLeft(LensPanel, Math.Clamp(x, 0, Math.Max(0, RootCanvas.ActualWidth - w)));
-        Canvas.SetTop(LensPanel, Math.Clamp(y, 0, Math.Max(0, RootCanvas.ActualHeight - h)));
+        Canvas.SetLeft(LensPanel, Math.Clamp(x, min.X, Math.Max(min.X, max.X - w)));
+        Canvas.SetTop(LensPanel, Math.Clamp(y, min.Y, Math.Max(min.Y, max.Y - h)));
     }
 
     /// <summary>Puts the hint on the monitor the pointer is on, not always the leftmost one.</summary>
@@ -395,7 +424,21 @@ public partial class RegionSelectWindow : Window
         DialogResult = true;
     }
 
-    private void Cancel() => DialogResult = false;
+    /// <summary>
+    /// Aborts the pick. Guarded because it can now arrive from three places (Esc via WPF focus,
+    /// Esc via the global hook, right-click) and setting <see cref="Window.DialogResult"/> on an
+    /// already-closed window throws.
+    /// </summary>
+    private void Cancel()
+    {
+        if (_closing)
+        {
+            return;
+        }
+
+        _closing = true;
+        DialogResult = false;
+    }
 
     /// <summary>Finds the top-level window under the cursor and highlights its bounds.</summary>
     private void UpdateCandidate()
@@ -462,12 +505,78 @@ public partial class RegionSelectWindow : Window
         return found != IntPtr.Zero;
     }
 
+    /// <summary>
+    /// Fast path: works whenever the overlay actually holds WPF keyboard focus.
+    /// <see cref="EscapeHookCallback"/> is the safety net for when it doesn't.
+    /// </summary>
     private void Window_KeyDown(object sender, KeyEventArgs e)
     {
         if (e.Key == Key.Escape)
         {
             Cancel();
         }
+    }
+
+    /// <summary>
+    /// Watches Esc system-wide for as long as the overlay is up.
+    /// </summary>
+    /// <remarks>
+    /// <para>Keyboard focus cannot be relied on here. The overlay is shown from a tray-resident
+    /// process, and <c>SetForegroundWindow</c> is refused by Windows' foreground lock unless the
+    /// caller qualifies — which it frequently does not: when the hotkey arrives through
+    /// <see cref="HotKeyService"/>'s low-level hook (PrtScn) the keystroke was delivered to the app
+    /// underneath, not to us; the tray menu path defers 180 ms and hands foreground back to the
+    /// previous app; the gallery toolbar path hides the gallery first, which does the same; and a
+    /// fullscreen foreground app holds the lock outright.</para>
+    /// <para>The overlay is <c>Topmost</c>, so it is always visible and always receives clicks even
+    /// when it has no focus — which is exactly why the failure looked intermittent: the mouse worked,
+    /// Esc did nothing, and a single click "fixed" it by finally granting focus. Hooking the key
+    /// removes focus from the equation entirely.</para>
+    /// </remarks>
+    private IntPtr EscapeHookCallback(int nCode, IntPtr wParam, IntPtr lParam)
+    {
+        if (nCode >= 0 && !_closing)
+        {
+            int msg = wParam.ToInt32();
+            if (msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN)
+            {
+                int vk = Marshal.ReadInt32(lParam); // KBDLLHOOKSTRUCT.vkCode is the first field
+                if (vk == VK_ESCAPE)
+                {
+                    // Queued rather than run inline: closing the window would tear down the
+                    // nested ShowDialog message pump this callback was invoked from.
+                    Dispatcher.BeginInvoke(new Action(Cancel));
+
+                    // Swallow it. While the overlay owns the screen, Esc belongs to the overlay
+                    // and must not also reach whatever is behind it.
+                    return (IntPtr)1;
+                }
+            }
+        }
+
+        return CallNextHookEx(_escHook, nCode, wParam, lParam);
+    }
+
+    private void InstallEscapeHook()
+    {
+        if (_escHook != IntPtr.Zero)
+        {
+            return;
+        }
+
+        _escProc = EscapeHookCallback;
+        _escHook = SetWindowsHookEx(WH_KEYBOARD_LL, _escProc, GetModuleHandle(null), 0);
+    }
+
+    private void RemoveEscapeHook()
+    {
+        if (_escHook != IntPtr.Zero)
+        {
+            UnhookWindowsHookEx(_escHook);
+            _escHook = IntPtr.Zero;
+        }
+
+        _escProc = null;
     }
 
     /// <summary>The chosen region in physical pixels on the virtual desktop.</summary>
@@ -478,10 +587,30 @@ public partial class RegionSelectWindow : Window
     private const uint SWP_NOZORDER = 0x0004;
     private const uint SWP_NOACTIVATE = 0x0010;
 
+    private const int WH_KEYBOARD_LL = 13;
+    private const int WM_KEYDOWN = 0x0100;
+    private const int WM_SYSKEYDOWN = 0x0104;
+    private const int VK_ESCAPE = 0x1B;
+
+    private delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
+
     [DllImport("user32.dll")]
     private static extern bool SetWindowPos(
         IntPtr hWnd, IntPtr hWndInsertAfter, int x, int y, int cx, int cy, uint uFlags);
 
     [DllImport("user32.dll")]
     private static extern bool SetForegroundWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr SetWindowsHookEx(
+        int idHook, LowLevelKeyboardProc lpfn, IntPtr hMod, uint dwThreadId);
+
+    [DllImport("user32.dll")]
+    private static extern bool UnhookWindowsHookEx(IntPtr hhk);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr CallNextHookEx(IntPtr hhk, int nCode, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    private static extern IntPtr GetModuleHandle(string? lpModuleName);
 }
