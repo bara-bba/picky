@@ -1,3 +1,8 @@
+---
+tags:
+  - picky
+---
+
 # Picky
 
 A Screenpresso-style screen-capture tool styled after Windows PowerToys: Fluent dark theme,

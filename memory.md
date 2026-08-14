@@ -1,3 +1,8 @@
+---
+tags:
+  - tool
+---
+
 # screenpresso-powertoys-style — session memory
 
 ## Snapshot — 2026-07-28
