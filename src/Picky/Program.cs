@@ -1,4 +1,5 @@
 using System.IO;
+using System.Threading;
 using Velopack;
 
 namespace Picky;
@@ -14,6 +15,9 @@ namespace Picky;
 /// </summary>
 internal static class Program
 {
+    // Held for the whole process lifetime so the OS keeps the single-instance mutex owned.
+    private static Mutex? _singleInstance;
+
     [STAThread]
     private static void Main()
     {
@@ -22,6 +26,30 @@ internal static class Program
         VelopackApp.Build()
             .OnBeforeUninstallFastCallback(_ => CleanUpUserData())
             .Run();
+
+        // Single-instance guard — stops a second Picky.exe from running (e.g. an update restart
+        // overlapping the old process, or "Start with Windows" coinciding with a manual launch).
+        //
+        // Placed AFTER VelopackApp.Run() so short-lived install/update/uninstall hooks, which exit
+        // inside Run(), are never blocked. Velopack's ApplyUpdatesAndRestart exits the old process
+        // (via Environment.Exit, which *abandons* the mutex) before launching the new build, so:
+        //   - AbandonedMutexException means the previous owner is gone and we now own it — proceed.
+        //   - the brief WaitOne timeout absorbs any handoff overlap without falsely blocking a restart.
+        _singleInstance = new Mutex(initiallyOwned: false, @"Local\Picky.SingleInstance");
+        bool owned;
+        try
+        {
+            owned = _singleInstance.WaitOne(TimeSpan.FromSeconds(3));
+        }
+        catch (AbandonedMutexException)
+        {
+            owned = true;
+        }
+
+        if (!owned)
+        {
+            return; // another Picky is already running
+        }
 
         var app = new App();
 
