@@ -45,15 +45,6 @@ jobs:
           if (-not (Test-Path (Join-Path $out 'monitors.txt'))) { throw 'probe produced no monitors.txt' }
           Get-Content (Join-Path $out 'monitors.txt') | Select-Object -First 20
 
-      # The app renders its icon at runtime (no .ico in the repo). `--emit-icon` writes that exact
-      # icon to a file so the installer, shortcuts and Add/Remove entry all use the real app icon.
-      - name: Emit app icon
-        shell: pwsh
-        run: |
-          & 'src/Picky/bin/Release/net8.0-windows10.0.19041.0/Picky.exe' --emit-icon "$PWD/app.ico"
-          for ($i = 0; $i -lt 20 -and -not (Test-Path app.ico); $i++) { Start-Sleep -Milliseconds 250 }
-          if (-not (Test-Path app.ico)) { throw '--emit-icon produced no app.ico' }
-
       # Framework-dependent: ~30 MB instead of ~280 MB self-contained. The .NET 8 Desktop Runtime
       # is a prerequisite, which Velopack installs on first run via --framework below. ffmpeg is no
       # longer bundled either (runtime prerequisite: winget install ffmpeg) — recording and video
@@ -76,11 +67,11 @@ jobs:
 
       - name: Pack installer
         run: >
-          vpk pack --packId Picky --packTitle Picky
+          vpk pack --packId Picky --packTitle picky
           --packAuthors "${{ github.repository_owner }}"
           --packVersion ${{ steps.ver.outputs.version }}
           --packDir publish --mainExe Picky.exe
-          --icon app.ico
+          --icon src/Picky/app.ico
           --framework net8.0-x64-desktop
 
       - name: Show artefacts

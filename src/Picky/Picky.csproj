@@ -7,6 +7,9 @@
     <UseWPF>true</UseWPF>
     <UseWindowsForms>true</UseWindowsForms>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <!-- Embeds the icon in Picky.exe so Explorer, the taskbar and the Add/Remove Programs entry
+         all show it. Regenerate from the app's own glyph with the emit-icon startup flag. -->
+    <ApplicationIcon>app.ico</ApplicationIcon>
     <AssemblyName>Picky</AssemblyName>
     <RootNamespace>Picky</RootNamespace>
     <ImplicitUsings>enable</ImplicitUsings>
