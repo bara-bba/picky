@@ -1,3 +1,4 @@
+using System.IO;
 using Velopack;
 
 namespace Picky;
@@ -18,7 +19,9 @@ internal static class Program
     {
         // No-ops when the app isn't running from a Velopack install (e.g. straight out of bin/),
         // so day-to-day debugging is unaffected.
-        VelopackApp.Build().Run();
+        VelopackApp.Build()
+            .OnBeforeUninstallFastCallback(_ => CleanUpUserData())
+            .Run();
 
         var app = new App();
 
@@ -28,5 +31,30 @@ internal static class Program
         app.InitializeComponent();
 
         app.Run();
+    }
+
+    /// <summary>
+    /// Runs during uninstall. Velopack removes its own install tree (%LocalAppData%\Picky, which
+    /// includes errors.log and the thumbnail cache), but never touches the roaming config folder —
+    /// so we delete it here to leave nothing behind.
+    ///
+    /// <para>Captured screenshots and recordings live in Pictures\Picky, NOT in AppData, and are
+    /// deliberately preserved: an uninstall must never destroy the user's own files.</para>
+    /// </summary>
+    private static void CleanUpUserData()
+    {
+        try
+        {
+            var roaming = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Picky");
+            if (Directory.Exists(roaming))
+            {
+                Directory.Delete(roaming, recursive: true);
+            }
+        }
+        catch
+        {
+            // Uninstall must never fail because leftover-data cleanup hit a locked file.
+        }
     }
 }
