@@ -83,8 +83,26 @@ jobs:
           vpk upload github --repoUrl https://github.com/${{ github.repository }}
           --token ${{ secrets.GITHUB_TOKEN }}
           --tag ${{ github.ref_name }}
-          --releaseName "Picky ${{ steps.ver.outputs.version }}"
+          --releaseName "picky ${{ steps.ver.outputs.version }}"
           --publish
+
+      # vpk names the user-facing downloads "Picky-win-Setup.exe" / "Picky-win-Portable.zip". Rename
+      # them on the release to drop the channel ("win") and add the version. Only these two are
+      # touched — the nupkg + RELEASES manifests the auto-updater reads keep their exact names.
+      - name: Rename installer / portable assets
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $ver = '${{ steps.ver.outputs.version }}'
+          $tag = '${{ github.ref_name }}'
+          $setup = Get-ChildItem Releases -Filter '*Setup.exe'   | Select-Object -First 1
+          $port  = Get-ChildItem Releases -Filter '*Portable.zip' | Select-Object -First 1
+          Copy-Item $setup.FullName "picky-Setup-$ver.exe"
+          Copy-Item $port.FullName  "picky-Portable-$ver.zip"
+          gh release delete-asset $tag $setup.Name -y
+          gh release delete-asset $tag $port.Name  -y
+          gh release upload $tag "picky-Setup-$ver.exe" "picky-Portable-$ver.zip"
 
       - name: Upload artefacts to the workflow run as well
         if: always()
