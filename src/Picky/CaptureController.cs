@@ -15,45 +15,63 @@ namespace Picky;
 /// </summary>
 internal static class CaptureController
 {
+    // Re-entrancy guard. The global hotkey keeps firing even while a modal RegionSelectWindow is
+    // open, and its ShowDialog pumps a nested message loop, so without this a burst of Win+Shift+S
+    // presses stacks nested full-screen overlays (each grabbing foreground/input) and the app locks
+    // up. A single UI-thread bool is enough — every entry point below runs on the dispatcher thread.
+    private static bool _busy;
+
     /// <summary>Freeze the desktop, let the user pick a region on the still image, crop it.</summary>
     public static void CaptureRegion()
     {
-        var hidden = HideOwnWindows();
-
-        // Freeze the whole desktop first (so open menus / tooltips are preserved), then
-        // select on the still image instead of the live screen.
-        using var frozen = ScreenCapture.CaptureVirtualScreen(out var frozenBounds);
-
-        bool accepted;
-        Rectangle selected;
+        if (_busy)
+        {
+            return;
+        }
+        _busy = true;
         try
         {
-            var overlay = new RegionSelectWindow(ScreenCapture.ToImageSource(frozen), frozenBounds);
-            accepted = overlay.ShowDialog() == true;
-            selected = overlay.SelectedRegion;
+            var hidden = HideOwnWindows();
+
+            // Freeze the whole desktop first (so open menus / tooltips are preserved), then
+            // select on the still image instead of the live screen.
+            using var frozen = ScreenCapture.CaptureVirtualScreen(out var frozenBounds);
+
+            bool accepted;
+            Rectangle selected;
+            try
+            {
+                var overlay = new RegionSelectWindow(ScreenCapture.ToImageSource(frozen), frozenBounds);
+                accepted = overlay.ShowDialog() == true;
+                selected = overlay.SelectedRegion;
+            }
+            finally
+            {
+                RestoreOwnWindows(hidden);
+            }
+
+            if (!accepted)
+            {
+                return;
+            }
+
+            // Virtual-desktop pixels -> offsets inside the frozen bitmap.
+            var crop = selected;
+            crop.Offset(-frozenBounds.X, -frozenBounds.Y);
+            crop.Intersect(new Rectangle(0, 0, frozen.Width, frozen.Height));
+
+            if (crop.Width < 1 || crop.Height < 1)
+            {
+                return;
+            }
+
+            using var cropped = frozen.Clone(crop, frozen.PixelFormat);
+            ShowCapture(cropped);
         }
         finally
         {
-            RestoreOwnWindows(hidden);
+            _busy = false;
         }
-
-        if (!accepted)
-        {
-            return;
-        }
-
-        // Virtual-desktop pixels -> offsets inside the frozen bitmap.
-        var crop = selected;
-        crop.Offset(-frozenBounds.X, -frozenBounds.Y);
-        crop.Intersect(new Rectangle(0, 0, frozen.Width, frozen.Height));
-
-        if (crop.Width < 1 || crop.Height < 1)
-        {
-            return;
-        }
-
-        using var cropped = frozen.Clone(crop, frozen.PixelFormat);
-        ShowCapture(cropped);
     }
 
     /// <summary>Grabs the entire monitor the mouse pointer is currently on.</summary>
@@ -62,21 +80,33 @@ internal static class CaptureController
     /// <summary>Grabs one specific monitor, edge to edge, with no dead padding.</summary>
     public static void CaptureScreen(MonitorInfo.Monitor monitor)
     {
-        var hidden = HideOwnWindows();
-
-        Bitmap bitmap;
+        if (_busy)
+        {
+            return;
+        }
+        _busy = true;
         try
         {
-            bitmap = ScreenCapture.CaptureMonitor(monitor, out _);
+            var hidden = HideOwnWindows();
+
+            Bitmap bitmap;
+            try
+            {
+                bitmap = ScreenCapture.CaptureMonitor(monitor, out _);
+            }
+            finally
+            {
+                RestoreOwnWindows(hidden);
+            }
+
+            using (bitmap)
+            {
+                ShowCapture(bitmap);
+            }
         }
         finally
         {
-            RestoreOwnWindows(hidden);
-        }
-
-        using (bitmap)
-        {
-            ShowCapture(bitmap);
+            _busy = false;
         }
     }
 
@@ -90,21 +120,33 @@ internal static class CaptureController
     /// </remarks>
     public static void CaptureAllScreens()
     {
-        var hidden = HideOwnWindows();
-
-        Bitmap bitmap;
+        if (_busy)
+        {
+            return;
+        }
+        _busy = true;
         try
         {
-            bitmap = ScreenCapture.CaptureVirtualScreen(out _);
+            var hidden = HideOwnWindows();
+
+            Bitmap bitmap;
+            try
+            {
+                bitmap = ScreenCapture.CaptureVirtualScreen(out _);
+            }
+            finally
+            {
+                RestoreOwnWindows(hidden);
+            }
+
+            using (bitmap)
+            {
+                ShowCapture(bitmap);
+            }
         }
         finally
         {
-            RestoreOwnWindows(hidden);
-        }
-
-        using (bitmap)
-        {
-            ShowCapture(bitmap);
+            _busy = false;
         }
     }
 
