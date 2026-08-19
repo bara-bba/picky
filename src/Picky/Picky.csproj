@@ -14,9 +14,9 @@
     <RootNamespace>Picky</RootNamespace>
     <ImplicitUsings>enable</ImplicitUsings>
     <SupportedOSPlatformVersion>10.0.19041.0</SupportedOSPlatformVersion>
-    <Version>0.4.3</Version>
-    <AssemblyVersion>0.4.3.0</AssemblyVersion>
-    <FileVersion>0.4.3.0</FileVersion>
+    <Version>0.4.4</Version>
+    <AssemblyVersion>0.4.4.0</AssemblyVersion>
+    <FileVersion>0.4.4.0</FileVersion>
     <!--
       Velopack must initialise before any UI, so we supply our own Main in Program.cs instead of the
       one WPF generates from App.xaml. StartupObject picks ours when both exist.
