@@ -53,11 +53,13 @@ public partial class App : Application
         };
 
         // Build-time helper: `Picky.exe --emit-icon <path>` writes the app .ico and exits.
+        // White square with a dark viewfinder (the glyph must contrast, or a white-on-white icon
+        // would be invisible — same pairing the app uses for a white accent).
         if (e.Args.Length == 2 && e.Args[0] == "--emit-icon")
         {
             System.IO.File.WriteAllBytes(
                 e.Args[1],
-                AppIcon.BuildIco(System.Drawing.Color.FromArgb(0x00, 0x78, 0xD4), System.Drawing.Color.White));
+                AppIcon.BuildIco(System.Drawing.Color.White, System.Drawing.Color.FromArgb(0x1C, 0x1C, 0x1C)));
             Shutdown();
             return;
         }
