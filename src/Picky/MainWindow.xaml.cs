@@ -168,6 +168,8 @@ public partial class MainWindow : Window
     private void GalleryButton_Click(object sender, RoutedEventArgs e)
         => ((App)System.Windows.Application.Current).ShowGalleryDocked();
 
+    private void CheckUpdates_Click(object sender, RoutedEventArgs e) => App.CheckForUpdatesManually();
+
     private void ChooseFolderButton_Click(object sender, RoutedEventArgs e)
     {
         var dialog = new Microsoft.Win32.OpenFolderDialog

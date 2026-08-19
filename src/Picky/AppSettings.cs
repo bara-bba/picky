@@ -26,6 +26,12 @@ internal sealed class AppSettings
     /// </summary>
     public bool StartWithWindows { get; set; }
 
+    /// <summary>
+    /// A release version the user chose to skip. Automatic checks (launch / periodic) stay quiet for
+    /// exactly this version; a newer release, or a manual "Check for updates", prompts again.
+    /// </summary>
+    public string? SkippedUpdateVersion { get; set; }
+
     private static string DefaultCaptureFolder =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyPictures), "Picky");
 

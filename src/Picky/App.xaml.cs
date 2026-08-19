@@ -88,37 +88,61 @@ public partial class App : Application
 
         _trayIcon = CreateTrayIcon();
 
-        // Fire-and-forget: never block startup on a network call.
-        _ = CheckForUpdatesAsync();
+        // Fire-and-forget: never block startup on a network call. A launch check prompts with a
+        // dialog if an update is found (unless the user skipped that version).
+        _ = CheckForUpdatesAsync(UpdateCheckKind.Launch);
 
         // A tray utility can stay open for days, so a single startup check would miss any release
-        // published in the meantime. Re-check every 6 hours until an update is staged (the check
-        // then no-ops, and ApplyPendingUpdate restarts into the new build).
+        // published in the meantime. Re-check every 6 hours; the periodic check is silent (tray
+        // balloon + menu entry only) so it can't interrupt work with a dialog.
         _updateTimer = new System.Windows.Threading.DispatcherTimer
         {
             Interval = TimeSpan.FromHours(6),
         };
-        _updateTimer.Tick += (_, _) => _ = CheckForUpdatesAsync();
+        _updateTimer.Tick += (_, _) => _ = CheckForUpdatesAsync(UpdateCheckKind.Periodic);
         _updateTimer.Start();
     }
 
+    /// <summary>What triggered an update check — decides how loudly it reports.</summary>
+    private enum UpdateCheckKind
+    {
+        /// <summary>At startup: prompt with a dialog if a (non-skipped) update is found.</summary>
+        Launch,
+
+        /// <summary>The 6-hour timer: silent — tray balloon + menu entry only, never a dialog.</summary>
+        Periodic,
+
+        /// <summary>The Preferences button: always reports, including "you're up to date", and
+        /// ignores a previously skipped version.</summary>
+        Manual,
+    }
+
+    /// <summary>The running version, e.g. "0.4.2".</summary>
+    private static string CurrentVersion =>
+        System.Reflection.Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "?";
+
+    /// <summary>Entry point for the Preferences "Check for updates" button.</summary>
+    internal void CheckForUpdatesManually() => _ = CheckForUpdatesAsync(UpdateCheckKind.Manual);
+
     /// <summary>
-    /// Looks for a newer release and downloads it in the background.
-    ///
-    /// <para>Deliberately silent: a tray utility shouldn't interrupt with dialogs, so a staged update
-    /// surfaces only as a tray menu entry plus a single balloon. Nothing is applied until the user
-    /// asks, because restarting mid-capture or mid-recording would lose work.</para>
+    /// Looks for a newer release. A found update is surfaced as a tray menu entry and, for launch /
+    /// manual checks, an interactive prompt (Update now / Skip this version / Remind me later).
+    /// Nothing is downloaded or applied until the user chooses to update, so a check never disrupts
+    /// a capture or recording.
     ///
     /// <para>No-ops entirely unless running from a Velopack install, so debugging out of
-    /// <c>bin\Debug</c> never touches the network.</para>
+    /// <c>bin\Debug</c> never touches the network (a manual check says so).</para>
     /// </summary>
-    private async Task CheckForUpdatesAsync()
+    private async Task CheckForUpdatesAsync(UpdateCheckKind kind)
     {
-        // Already downloaded and waiting for a restart — nothing more to do. Stop the periodic
-        // timer so it doesn't re-check (and re-download) the same release.
+        // Already found one this session: re-prompt on a manual check, otherwise leave the tray
+        // entry as-is (the timer has been stopped).
         if (_pendingUpdate is not null)
         {
-            _updateTimer?.Stop();
+            if (kind == UpdateCheckKind.Manual)
+            {
+                PromptForUpdate(_pendingUpdate.TargetFullRelease.Version.ToString());
+            }
             return;
         }
 
@@ -128,35 +152,89 @@ public partial class App : Application
 
             if (!manager.IsInstalled)
             {
+                if (kind == UpdateCheckKind.Manual)
+                {
+                    WinForms.MessageBox.Show(
+                        "Updates are only available in an installed build of Picky.",
+                        "Picky", WinForms.MessageBoxButtons.OK, WinForms.MessageBoxIcon.Information);
+                }
                 return;
             }
 
             var update = await manager.CheckForUpdatesAsync();
             if (update is null)
             {
+                if (kind == UpdateCheckKind.Manual)
+                {
+                    WinForms.MessageBox.Show(
+                        $"You're on the latest version (v{CurrentVersion}).",
+                        "Picky", WinForms.MessageBoxButtons.OK, WinForms.MessageBoxIcon.Information);
+                }
                 return;
             }
 
-            await manager.DownloadUpdatesAsync(update);
+            var version = update.TargetFullRelease.Version.ToString();
+
+            // Honour a skipped version for automatic checks, but never when the user explicitly asks.
+            if (kind != UpdateCheckKind.Manual && Settings.SkippedUpdateVersion == version)
+            {
+                return;
+            }
 
             _updateManager = manager;
             _pendingUpdate = update;
+            _updateTimer?.Stop(); // found one — stop polling
 
-            var version = update.TargetFullRelease.Version.ToString();
-            _updateMenuItem.Text = $"Restart to update to v{version}";
+            _updateMenuItem.Text = $"Update to v{version}…";
             _updateMenuItem.Visible = true;
-            _trayIcon.ShowBalloonTip(
-                4000, "Picky", $"Update v{version} downloaded — restart to apply.", WinForms.ToolTipIcon.Info);
+
+            if (kind == UpdateCheckKind.Periodic)
+            {
+                _trayIcon.ShowBalloonTip(
+                    4000, "Picky", $"Update v{version} available — open Picky to install.",
+                    WinForms.ToolTipIcon.Info);
+            }
+            else
+            {
+                PromptForUpdate(version);
+            }
         }
         catch (Exception ex)
         {
-            // Offline, rate-limited, or no release published yet. Log it; never nag the user.
+            // Offline, rate-limited, or no release published yet. Log it; only a manual check reports.
             LogError(ex);
+            if (kind == UpdateCheckKind.Manual)
+            {
+                WinForms.MessageBox.Show(
+                    "Couldn't check for updates. Check your connection and try again.",
+                    "Picky", WinForms.MessageBoxButtons.OK, WinForms.MessageBoxIcon.Warning);
+            }
         }
     }
 
-    /// <summary>Applies a staged update and relaunches.</summary>
-    private void ApplyPendingUpdate()
+    /// <summary>Shows the interactive update prompt and acts on the choice.</summary>
+    private void PromptForUpdate(string version)
+    {
+        switch (UpdatePromptWindow.Ask(CurrentVersion, version))
+        {
+            case UpdateChoice.UpdateNow:
+                ApplyPendingUpdate();
+                break;
+
+            case UpdateChoice.Skip:
+                Settings.SkippedUpdateVersion = version;
+                Settings.Save();
+                _updateMenuItem.Visible = false;
+                break;
+
+            case UpdateChoice.Later:
+                // Leave the tray entry visible so it can be installed later.
+                break;
+        }
+    }
+
+    /// <summary>Downloads the pending update, then applies it and relaunches.</summary>
+    private async void ApplyPendingUpdate()
     {
         if (_updateManager is null || _pendingUpdate is null)
         {
@@ -169,7 +247,19 @@ public partial class App : Application
             StopRecording();
         }
 
-        _updateManager.ApplyUpdatesAndRestart(_pendingUpdate);
+        try
+        {
+            // Download on demand rather than eagerly, so a skipped/ignored update costs no bandwidth.
+            await _updateManager.DownloadUpdatesAsync(_pendingUpdate);
+            _updateManager.ApplyUpdatesAndRestart(_pendingUpdate);
+        }
+        catch (Exception ex)
+        {
+            LogError(ex);
+            WinForms.MessageBox.Show(
+                "Couldn't download the update. Please try again later.",
+                "Picky", WinForms.MessageBoxButtons.OK, WinForms.MessageBoxIcon.Warning);
+        }
     }
 
 /// <summary>Accent-tinted app glyph for Window.Icon (title bar + taskbar).</summary>

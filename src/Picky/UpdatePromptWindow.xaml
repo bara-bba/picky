@@ -1,0 +1,43 @@
+<Window x:Class="Picky.UpdatePromptWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Update available"
+        SizeToContent="Height"
+        Width="470"
+        WindowStyle="None"
+        AllowsTransparency="False"
+        ResizeMode="NoResize"
+        Background="{StaticResource Brush.App}"
+        Foreground="{StaticResource Brush.TextPrimary}"
+        FontFamily="Segoe UI Variable, Segoe UI"
+        WindowStartupLocation="CenterScreen"
+        Topmost="True">
+    <Border BorderBrush="{StaticResource Brush.Stroke}" BorderThickness="1" Padding="22,20">
+        <StackPanel>
+            <TextBlock Text="Update available"
+                       FontSize="16"
+                       FontWeight="SemiBold" />
+            <TextBlock Name="MessageText"
+                       Foreground="{StaticResource Brush.TextSecondary}"
+                       FontSize="13"
+                       TextWrapping="Wrap"
+                       Margin="0,10,0,0" />
+
+            <StackPanel Orientation="Horizontal"
+                        HorizontalAlignment="Right"
+                        Margin="0,22,0,0">
+                <Button Content="Skip this version"
+                        Click="Skip_Click"
+                        Style="{StaticResource SubtleButton}"
+                        Margin="0,0,8,0" />
+                <Button Content="Remind me later"
+                        Click="Later_Click"
+                        Style="{StaticResource SubtleButton}"
+                        Margin="0,0,8,0" />
+                <Button Content="Update now"
+                        Click="UpdateNow_Click"
+                        Style="{StaticResource AccentButton}" />
+            </StackPanel>
+        </StackPanel>
+    </Border>
+</Window>
