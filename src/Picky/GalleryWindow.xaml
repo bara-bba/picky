@@ -1,7 +1,7 @@
 <Window x:Class="Picky.GalleryWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Picky — Gallery"
+        Title="picky — Gallery"
         Height="620"
         Width="880"
         MinHeight="360"
