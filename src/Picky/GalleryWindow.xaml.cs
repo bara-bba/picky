@@ -147,25 +147,66 @@ public partial class GalleryWindow : Window
 
     public void Refresh()
     {
-        _items.Clear();
-
         var folder = App.Settings.CaptureFolder;
         FolderPathText.Text = folder;
 
+        // Snapshot what's on disk now (newest first), de-duplicated by path.
+        var onDisk = new List<(string Path, DateTime Time)>();
         if (Directory.Exists(folder))
         {
             var directory = new DirectoryInfo(folder);
 
-            var files = CaptureItem.SupportedPatterns
+            onDisk = CaptureItem.SupportedPatterns
                 .SelectMany(pattern => directory.GetFiles(pattern))
                 // "*.jpg" can also match ".jpeg" via 8.3 short names, so de-duplicate by path.
                 .GroupBy(f => f.FullName, StringComparer.OrdinalIgnoreCase)
                 .Select(g => g.First())
-                .OrderByDescending(f => f.LastWriteTime);
+                .OrderByDescending(f => f.LastWriteTime)
+                .Select(f => (f.FullName, f.LastWriteTime))
+                .ToList();
+        }
 
-            foreach (var file in files)
+        // Incremental sync instead of clear-and-rebuild: a post-capture pop then adds only the
+        // one new file rather than re-creating (and re-decoding) a card for every existing
+        // capture. Existing items keep their already-loaded thumbnails.
+        var desiredPaths = new HashSet<string>(onDisk.Select(d => d.Path), StringComparer.OrdinalIgnoreCase);
+
+        // Drop items whose file no longer exists (deleted / renamed / moved out).
+        for (int i = _items.Count - 1; i >= 0; i--)
+        {
+            if (!desiredPaths.Contains(_items[i].Path))
             {
-                _items.Add(new CaptureItem(file.FullName, file.LastWriteTime));
+                _items.RemoveAt(i);
+            }
+        }
+
+        // Index the survivors by path so we can reuse them in place.
+        var existing = new Dictionary<string, CaptureItem>(StringComparer.OrdinalIgnoreCase);
+        foreach (var item in _items)
+        {
+            existing[item.Path] = item;
+        }
+
+        // Rebuild the collection in the desired newest-first order, creating a card only for
+        // files that weren't already shown.
+        for (int target = 0; target < onDisk.Count; target++)
+        {
+            var (path, time) = onDisk[target];
+            var item = existing.TryGetValue(path, out var found) ? found : new CaptureItem(path, time);
+
+            int current = _items.IndexOf(item);
+            if (current == target)
+            {
+                continue; // already in the right slot
+            }
+
+            if (current >= 0)
+            {
+                _items.Move(current, target);
+            }
+            else
+            {
+                _items.Insert(target, item);
             }
         }
 
@@ -866,13 +907,24 @@ public partial class GalleryWindow : Window
     /// the gallery itself lands in the screenshot or the recording. Deliberately does not re-show:
     /// a capture re-opens the gallery with the new item, and a recording must keep it out of frame.
     /// </summary>
+    /// <remarks>
+    /// Was a fixed 180 ms timer — a guess padded to be "safe". Instead, hide, then flush the
+    /// dispatcher to Render priority so WPF's layout/render pass for the hide runs synchronously,
+    /// and cover DWM's compositor present with a small fixed margin. Deterministic and far shorter
+    /// than the old blind wait on the common case.
+    /// </remarks>
     private void RunHidden(Action action)
     {
         Hide();
 
+        // Run the hide's render pass now rather than waiting a guessed interval for it.
+        Dispatcher.Invoke(() => { }, System.Windows.Threading.DispatcherPriority.Render);
+
+        // Defer the capture just past the render so the compositor has presented the hidden
+        // frame; a short margin covers DWM putting it on the glass.
         var timer = new System.Windows.Threading.DispatcherTimer
         {
-            Interval = TimeSpan.FromMilliseconds(180),
+            Interval = TimeSpan.FromMilliseconds(30),
         };
         timer.Tick += (_, _) =>
         {
@@ -1022,8 +1074,35 @@ public sealed class CaptureItem : INotifyPropertyChanged
         }
         else
         {
-            Thumbnail = LoadBitmap(path);
+            LoadImageThumbnailAsync();
         }
+    }
+
+    /// <summary>
+    /// Decodes the image thumbnail off the UI thread and fills it in when ready.
+    ///
+    /// <para>Decoding inline in the constructor meant that popping the gallery after a capture
+    /// had to synchronously decode a thumbnail for every image already in the folder before the
+    /// window could show — O(folder size) on the UI thread, growing worse the more you capture.
+    /// Loading on a background task (as videos already do) keeps the pop instant regardless of how
+    /// many captures the folder holds; each card fills in its picture a moment later.</para>
+    /// </summary>
+    private void LoadImageThumbnailAsync()
+    {
+        var path = Path;
+
+        Task.Run(() =>
+        {
+            var bitmap = LoadBitmap(path); // Freeze()s the result, so cross-thread hand-off is safe
+
+            System.Windows.Application.Current?.Dispatcher.Invoke(() =>
+            {
+                if (bitmap is not null)
+                {
+                    Thumbnail = bitmap;
+                }
+            });
+        });
     }
 
     /// <summary>

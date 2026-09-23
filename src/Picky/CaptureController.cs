@@ -168,9 +168,20 @@ internal static class CaptureController
             window.Hide();
         }
 
-        // Let the hides paint before we grab pixels.
+        // Nothing was on screen (the usual hotkey case), so there is nothing to wait for —
+        // skip straight to the grab instead of paying a fixed delay for no reason.
+        if (hidden.Count == 0)
+        {
+            return hidden;
+        }
+
+        // A window WAS hidden, so wait for that hide to actually reach the screen before we
+        // grab pixels — otherwise Picky's own UI can be baked into the shot. Flushing the
+        // dispatcher to Render priority runs WPF's layout/render pass synchronously; a short
+        // compositor-present margin then covers DWM putting the frame on the glass. This is a
+        // small fixed budget (was 120 ms) only on the rare path where something was visible.
         app.Dispatcher.Invoke(() => { }, DispatcherPriority.Render);
-        System.Threading.Thread.Sleep(120);
+        System.Threading.Thread.Sleep(30);
 
         return hidden;
     }
