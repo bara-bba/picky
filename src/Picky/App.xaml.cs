@@ -15,6 +15,7 @@ public partial class App : Application
     private MainWindow _mainWindow = null!;
     private GalleryWindow? _gallery;
     private HotKeyService _hotKeys = null!;
+    private HotKeyService _recordHotKey = null!;
 
     private readonly RecordingController _recorder = new();
     private readonly RecordingBorder _recordBorder = new();
@@ -29,6 +30,15 @@ public partial class App : Application
     private Window? _recordBar;
     private System.Windows.Threading.DispatcherTimer? _recordTimer;
     private DateTime _recordStart;
+
+    /// <summary>
+    /// Guards the entire record flow against re-entry. Set the instant a start is requested and
+    /// only cleared once the flow has fully settled (recording running, or cancelled/failed, or
+    /// stopped). Pressing Win+Shift+R — or the tray item — again while a start is mid-flight
+    /// (region overlay open, ffmpeg prompt showing) is ignored, so there can only ever be one
+    /// recording and one region overlay at a time.
+    /// </summary>
+    private bool _recordBusy;
 
     internal static AppSettings Settings { get; private set; } = null!;
 
@@ -83,6 +93,18 @@ public partial class App : Application
 
         _hotKeys = new HotKeyService(() => Dispatcher.BeginInvoke(new Action(TriggerRegionCapture)));
         InitHotKey();
+
+        // Fixed, always-on recording shortcut (Win+Shift+R). A second, independent hotkey service
+        // so it coexists with whatever capture shortcut the user has chosen. Pressing it starts a
+        // region recording; pressing it again while recording stops and saves — same toggle as the
+        // tray "Record region…" item.
+        _recordHotKey = new HotKeyService(() => Dispatcher.BeginInvoke(new Action(ToggleRecording)));
+        if (!_recordHotKey.Apply(HotKeyDef.Recording))
+        {
+            // Win+Shift+R is almost always free, but if another app grabbed it, don't crash —
+            // the tray menu still starts recordings. Record it for diagnostics only.
+            LogError(new InvalidOperationException("Could not register the Win+Shift+R recording hotkey."));
+        }
 
         // Start tray-resident with no window shown. Pressing the capture hotkey goes
         // straight to the snip overlay; the control panel opens on demand from the tray.
@@ -299,6 +321,7 @@ public partial class App : Application
         }
         _recordBorder.Hide();
         _hotKeys?.Dispose();
+        _recordHotKey?.Dispose();
         _trayIcon?.Dispose();
         base.OnExit(e);
     }
@@ -386,7 +409,7 @@ public partial class App : Application
 
         menu.Items.Add(new WinForms.ToolStripSeparator());
 
-        _recordMenuItem = new WinForms.ToolStripMenuItem("Record region…", null, (_, _) => ToggleRecording());
+        _recordMenuItem = new WinForms.ToolStripMenuItem("Record region…  (Win+Shift+R)", null, (_, _) => ToggleRecording());
         menu.Items.Add(_recordMenuItem);
 
         menu.Items.Add(new WinForms.ToolStripSeparator());
@@ -475,8 +498,11 @@ public partial class App : Application
         {
             StopRecording();
         }
-        else
+        else if (!_recordBusy)
         {
+            // Not recording and no start already in flight — begin one. If _recordBusy is set the
+            // user is still picking a region (or dismissing the ffmpeg prompt) from a previous
+            // press; ignore the repeat so we never open a second overlay or launch a second ffmpeg.
             StartRecording();
         }
     }
@@ -493,66 +519,86 @@ public partial class App : Application
     /// </summary>
     internal void StartRecording(Rectangle? region = null)
     {
-        if (_recorder.IsRecording)
+        // Hard guard: at most one record flow at a time. Covers every caller (hotkey, tray item,
+        // gallery). While this is set, a region overlay or ffmpeg prompt from an earlier press is
+        // still on screen, so a repeat press must do nothing.
+        if (_recorder.IsRecording || _recordBusy)
         {
             return;
         }
 
-        if (!RecordingController.IsAvailable())
-        {
-            var choice = WinForms.MessageBox.Show(
-                "Screen recording needs ffmpeg, which isn't installed.\n\n" +
-                "Install it with:  winget install ffmpeg\n(or download it and add it to your PATH).\n\n" +
-                "Open the ffmpeg download page now?",
-                "Picky — ffmpeg required",
-                WinForms.MessageBoxButtons.YesNo,
-                WinForms.MessageBoxIcon.Information);
+        _recordBusy = true;
 
-            if (choice == WinForms.DialogResult.Yes)
+        // Cleared on every path that does NOT end up recording. On success it stays set and is
+        // released by StopRecording, so the toggle treats "mid-start" and "recording" alike.
+        bool started = false;
+        try
+        {
+            if (!RecordingController.IsAvailable())
             {
-                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(
-                    "https://www.gyan.dev/ffmpeg/builds/") { UseShellExecute = true });
-            }
-            return;
-        }
+                var choice = WinForms.MessageBox.Show(
+                    "Screen recording needs ffmpeg, which isn't installed.\n\n" +
+                    "Install it with:  winget install ffmpeg\n(or download it and add it to your PATH).\n\n" +
+                    "Open the ffmpeg download page now?",
+                    "Picky — ffmpeg required",
+                    WinForms.MessageBoxButtons.YesNo,
+                    WinForms.MessageBoxIcon.Information);
 
-        Rectangle target;
-
-        if (region is { } fixedRegion)
-        {
-            target = fixedRegion;
-        }
-        else
-        {
-            var overlay = new RegionSelectWindow();
-            if (overlay.ShowDialog() != true)
-            {
+                if (choice == WinForms.DialogResult.Yes)
+                {
+                    System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(
+                        "https://www.gyan.dev/ffmpeg/builds/") { UseShellExecute = true });
+                }
                 return;
             }
 
-            target = overlay.SelectedRegion;
+            Rectangle target;
+
+            if (region is { } fixedRegion)
+            {
+                target = fixedRegion;
+            }
+            else
+            {
+                var overlay = new RegionSelectWindow();
+                if (overlay.ShowDialog() != true)
+                {
+                    return;
+                }
+
+                target = overlay.SelectedRegion;
+            }
+
+            var folder = Settings.EnsureCaptureFolder();
+            var path = System.IO.Path.Combine(folder, $"Picky_{DateTime.Now:yyyyMMdd_HHmmss}.mp4");
+
+            if (!_recorder.Start(target, path, out var error))
+            {
+                WinForms.MessageBox.Show($"Couldn't start recording:\n{error}", "Picky");
+                return;
+            }
+
+            _recordMenuItem.Text = "⏹ Stop recording";
+            // Frame the area actually being captured (even-adjusted), drawn just outside it.
+            _recordBorder.Show(_recorder.Region);
+            ShowRecordBar();
+            started = true; // keep _recordBusy set until StopRecording releases it
         }
-
-        var folder = Settings.EnsureCaptureFolder();
-        var path = System.IO.Path.Combine(folder, $"Picky_{DateTime.Now:yyyyMMdd_HHmmss}.mp4");
-
-        if (!_recorder.Start(target, path, out var error))
+        finally
         {
-            WinForms.MessageBox.Show($"Couldn't start recording:\n{error}", "Picky");
-            return;
+            if (!started)
+            {
+                _recordBusy = false;
+            }
         }
-
-        _recordMenuItem.Text = "⏹ Stop recording";
-        // Frame the area actually being captured (even-adjusted), drawn just outside it.
-        _recordBorder.Show(_recorder.Region);
-        ShowRecordBar();
     }
 
     private void StopRecording()
     {
+        _recordBusy = false;
         var path = _recorder.Stop();
         _recordBorder.Hide();
-        _recordMenuItem.Text = "Record region…";
+        _recordMenuItem.Text = "Record region…  (Win+Shift+R)";
 
         _recordTimer?.Stop();
         _recordTimer = null;

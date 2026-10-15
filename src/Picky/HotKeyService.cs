@@ -12,6 +12,7 @@ internal sealed record HotKeyDef(string Name, uint Modifiers, uint VirtualKey)
     private const uint MOD_WIN = 0x8;
 
     private const uint VK_S = 0x53;
+    private const uint VK_R = 0x52;
     private const uint VK_1 = 0x31;
     private const uint VK_SNAPSHOT = 0x2C; // PrintScreen
 
@@ -22,6 +23,9 @@ internal sealed record HotKeyDef(string Name, uint Modifiers, uint VirtualKey)
         new HotKeyDef("PrtScn", 0, VK_SNAPSHOT),
         new HotKeyDef("Ctrl+Shift+1", MOD_CONTROL | MOD_SHIFT, VK_1),
     };
+
+    /// <summary>Fixed shortcut that starts (or stops) a screen recording — not user-configurable.</summary>
+    public static readonly HotKeyDef Recording = new("Win+Shift+R", MOD_WIN | MOD_SHIFT, VK_R);
 
     public static HotKeyDef? FromName(string? name) => Presets.FirstOrDefault(p => p.Name == name);
 

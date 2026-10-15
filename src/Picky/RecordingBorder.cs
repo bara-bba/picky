@@ -62,13 +62,19 @@ internal sealed class RecordingBorder
         int h = regionPx.Height;
         const int t = Thickness;
 
-        // Strictly outside the recorded rect: the corners are covered by the longer top/bottom runs.
+        // Strictly outside the recorded rect. Top and bottom run the full outer width. The left and
+        // right strips span the inner height plus a 1px overlap into the top and bottom strips at
+        // each end, so the four butt-joints are covered without stacking a full strip's worth of
+        // paint in the corners. The 1px overlap is what closes the hairline seams that appear when
+        // four independently DPI-rounded top-level windows round their edges apart on a scaled
+        // display; keeping it to 1px avoids a visibly darker double-painted corner during the breath.
+        const int o = 1;
         var edges = new[]
         {
-            new Rectangle(x - t, y - t, w + 2 * t, t), // top
-            new Rectangle(x - t, y + h, w + 2 * t, t), // bottom
-            new Rectangle(x - t, y, t, h),             // left
-            new Rectangle(x + w, y, t, h),             // right
+            new Rectangle(x - t, y - t, w + 2 * t, t),         // top
+            new Rectangle(x - t, y + h, w + 2 * t, t),         // bottom
+            new Rectangle(x - t, y - o, t, h + 2 * o),         // left
+            new Rectangle(x + w, y - o, t, h + 2 * o),         // right
         };
 
         // One brush for all four strips, so the whole frame breathes in step.
@@ -155,10 +161,36 @@ internal sealed class RecordingBorder
             int ex = GetWindowLong(hwnd, GWL_EXSTYLE);
             SetWindowLong(hwnd, GWL_EXSTYLE, ex | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW);
 
+            // Strip all non-client chrome. A WindowStyle.None window still keeps a caption/frame in
+            // its window styles, and DWM draws a drop shadow for it — at the corners the overlapping
+            // strips' shadows compound into a visible rounded dark-red blob that reads as a broken
+            // border. Removing the frame styles (and disabling the DWM shadow below) leaves four
+            // clean opaque rectangles with nothing but their fill.
+            int style = GetWindowLong(hwnd, GWL_STYLE);
+            SetWindowLong(hwnd, GWL_STYLE, style & ~(WS_CAPTION | WS_THICKFRAME | WS_BORDER | WS_DLGFRAME));
+
+            // Belt-and-braces: tell DWM not to render non-client content (the shadow) for this hwnd.
+            int disabled = DWMNCRP_DISABLED;
+            DwmSetWindowAttribute(hwnd, DWMWA_NCRENDERING_POLICY, ref disabled, sizeof(int));
+
+            // Moving a strip onto a monitor with a different DPI (e.g. 175% primary -> 100% external)
+            // makes Windows send WM_DPICHANGED, and WPF's default handling resizes the window by the
+            // DPI ratio — shrinking every strip to ~1/1.75 and breaking the frame. Swallow it and
+            // re-assert the exact physical bounds instead; a solid fill doesn't care about DPI.
+            HwndSource.FromHwnd(hwnd)?.AddHook((IntPtr h, int msg, IntPtr w, IntPtr l, ref bool handled) =>
+            {
+                if (msg == WM_DPICHANGED)
+                {
+                    SetWindowPos(h, HWND_TOPMOST, boundsPx.X, boundsPx.Y, boundsPx.Width, boundsPx.Height, SWP_NOACTIVATE);
+                    handled = true;
+                }
+                return IntPtr.Zero;
+            });
+
             SetWindowPos(
                 hwnd, HWND_TOPMOST,
                 boundsPx.X, boundsPx.Y, boundsPx.Width, boundsPx.Height,
-                SWP_NOACTIVATE);
+                SWP_NOACTIVATE | SWP_FRAMECHANGED);
         };
 
         strip.Show();
@@ -167,11 +199,24 @@ internal sealed class RecordingBorder
 
     // --- Win32 ---
 
+    private const int GWL_STYLE = -16;
+    private const int WM_DPICHANGED = 0x02E0;
     private const int GWL_EXSTYLE = -20;
+
+    private const int WS_BORDER = 0x00800000;
+    private const int WS_DLGFRAME = 0x00400000;
+    private const int WS_CAPTION = WS_BORDER | WS_DLGFRAME;
+    private const int WS_THICKFRAME = 0x00040000;
+
     private const int WS_EX_TRANSPARENT = 0x00000020;
     private const int WS_EX_TOOLWINDOW = 0x00000080;
     private const int WS_EX_NOACTIVATE = 0x08000000;
     private const uint SWP_NOACTIVATE = 0x0010;
+    private const uint SWP_FRAMECHANGED = 0x0020;
+
+    // DWM: disable non-client rendering (the drop shadow) on the strip windows.
+    private const int DWMWA_NCRENDERING_POLICY = 2;
+    private const int DWMNCRP_DISABLED = 1;
 
     private static readonly IntPtr HWND_TOPMOST = new(-1);
 
@@ -184,4 +229,7 @@ internal sealed class RecordingBorder
     [DllImport("user32.dll")]
     private static extern bool SetWindowPos(
         IntPtr hWnd, IntPtr hWndInsertAfter, int x, int y, int cx, int cy, uint uFlags);
+
+    [DllImport("dwmapi.dll")]
+    private static extern int DwmSetWindowAttribute(IntPtr hWnd, int attr, ref int attrValue, int attrSize);
 }
