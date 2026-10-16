@@ -33,9 +33,9 @@ internal static class AppIcon
             g.FillPath(bg, square);
         }
 
-        float m = s * 0.30f;          // bracket corner inset
-        float len = s * 0.14f;        // bracket arm length
-        float thickness = Math.Max(1.4f, s * 0.075f);
+        float m = s * 0.24f;          // bracket corner inset (matches clony "=" footprint)
+        float len = s * 0.17f;        // bracket arm length
+        float thickness = Math.Max(1.6f, s * 0.085f);
 
         using var pen = new Pen(glyph, thickness)
         {
@@ -51,7 +51,7 @@ internal static class AppIcon
         g.DrawLines(pen, new[] { new PointF(r - len, r), new PointF(r, r), new PointF(r, r - len) });
 
         // Focus dot in the center.
-        float dot = s * 0.09f;
+        float dot = s * 0.10f;
         using (var db = new SolidBrush(glyph))
         {
             g.FillEllipse(db, s / 2 - dot, s / 2 - dot, dot * 2, dot * 2);

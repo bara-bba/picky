@@ -980,7 +980,13 @@ public partial class GalleryWindow : Window
     }
 
     private void UpdateRecordButton()
-        => RecordButton.Content = PickyApp.IsRecording ? "⏹  Stop" : "⏺  Record";
+    {
+        // Icon-only to match the toolbar; ⏹ while recording, ⏺ otherwise. Tooltip carries the words.
+        RecordButton.Content = PickyApp.IsRecording ? "⏹" : "⏺";
+        RecordButton.ToolTip = PickyApp.IsRecording
+            ? "Stop recording"
+            : "Click to record a region — right-click for full screen";
+    }
 
     private void Preferences_Click(object sender, RoutedEventArgs e)
         => ((App)System.Windows.Application.Current).ShowMainWindow();
