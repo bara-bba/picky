@@ -61,6 +61,8 @@
                     Background="Transparent"
                     ClipToBounds="True"
                     MouseLeftButtonDown="Timeline_MouseLeftButtonDown"
+                    MouseMove="Timeline_MouseMove"
+                    MouseLeftButtonUp="Timeline_MouseLeftButtonUp"
                     SizeChanged="Timeline_SizeChanged">
                 <!-- Selection band (between the two active markers). -->
                 <Rectangle Name="SelectionBand"

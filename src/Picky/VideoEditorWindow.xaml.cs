@@ -46,6 +46,12 @@ public partial class VideoEditorWindow : Window
     private bool _playing;
     private bool _mediaReady;
 
+    // Timeline drag-to-select state: the press position, and whether the pointer has moved far
+    // enough to count as a drag (vs. a plain click, which just seeks).
+    private double _dragStartX;
+    private bool _dragArmed;
+    private bool _dragging;
+
     /// <summary>Small step for ← / →; a larger jump is applied with Shift.</summary>
     private static readonly TimeSpan SmallStep = TimeSpan.FromMilliseconds(100);
     private static readonly TimeSpan LargeStep = TimeSpan.FromSeconds(2);
@@ -266,9 +272,75 @@ public partial class VideoEditorWindow : Window
             return;
         }
 
+        // Arm a possible drag-select; whether it becomes a drag or a plain seek is decided on move/up.
+        _dragStartX = e.GetPosition(Timeline).X;
+        _dragArmed = true;
+        _dragging = false;
+        Timeline.CaptureMouse();
+    }
+
+    private void Timeline_MouseMove(object sender, MouseEventArgs e)
+    {
+        if (!_dragArmed || e.LeftButton != MouseButtonState.Pressed
+            || _duration <= TimeSpan.Zero || Timeline.ActualWidth <= 0)
+        {
+            return;
+        }
+
         double x = e.GetPosition(Timeline).X;
+
+        // Below the threshold it's still a click, not a drag.
+        if (!_dragging && Math.Abs(x - _dragStartX) < 4)
+        {
+            return;
+        }
+
+        _dragging = true;
+
+        // Drag start and current position become the two markers (sorted), so the selection band
+        // and Keep/Remove follow the drag live.
+        _markers.Clear();
+        _markers.Add(TimeAtX(_dragStartX));
+        _markers.Add(TimeAtX(x));
+        _markers.Sort();
+
+        RenderTimeline();
+    }
+
+    private void Timeline_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        if (!_dragArmed)
+        {
+            return;
+        }
+
+        _dragArmed = false;
+        Timeline.ReleaseMouseCapture();
+
+        double x = e.GetPosition(Timeline).X;
+
+        if (_dragging)
+        {
+            // Finalise the dragged selection; drop a degenerate (too-short) drag.
+            _dragging = false;
+            if (_markers.Count == 2 && (_markers[1] - _markers[0]).TotalMilliseconds < 50)
+            {
+                _markers.Clear();
+            }
+            RenderTimeline();
+        }
+        else
+        {
+            // No drag — treat it as a plain seek to the clicked position.
+            Seek(TimeAtX(x));
+        }
+    }
+
+    /// <summary>Clip time at a horizontal position on the timeline.</summary>
+    private TimeSpan TimeAtX(double x)
+    {
         double fraction = Math.Clamp(x / Timeline.ActualWidth, 0, 1);
-        Seek(TimeSpan.FromTicks((long)(_duration.Ticks * fraction)));
+        return TimeSpan.FromTicks((long)(_duration.Ticks * fraction));
     }
 
     private void RenderTimeline()
