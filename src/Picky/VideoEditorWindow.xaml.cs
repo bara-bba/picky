@@ -183,6 +183,12 @@ public partial class VideoEditorWindow : Window
 
     private void AddMarker_Click(object sender, RoutedEventArgs e) => AddMarkerAtPlayhead();
 
+    /// <summary>
+    /// Drops a marker at the playhead. The selection is simply the span between the two markers, so
+    /// the model is capped at two: the first <c>M</c> sets the start, the second sets the end, and a
+    /// third replaces whichever existing marker is nearer (nudging that edge). This keeps the
+    /// selection explicit and independent of where the playhead later drifts.
+    /// </summary>
     private void AddMarkerAtPlayhead()
     {
         if (_duration <= TimeSpan.Zero)
@@ -198,13 +204,25 @@ public partial class VideoEditorWindow : Window
             return;
         }
 
-        _markers.Add(at);
+        if (_markers.Count < 2)
+        {
+            _markers.Add(at);
+        }
+        else
+        {
+            // Replace the nearer of the two existing markers — the user is adjusting that edge.
+            int nearer = Math.Abs((_markers[0] - at).TotalMilliseconds) <= Math.Abs((_markers[1] - at).TotalMilliseconds)
+                ? 0
+                : 1;
+            _markers[nearer] = at;
+        }
+
         _markers.Sort();
         RenderTimeline();
         UpdateSelectionState();
     }
 
-    /// <summary>The span acted on: the two markers bracketing the playhead, else the nearest pair.</summary>
+    /// <summary>The span to act on: simply the span between the two markers (order-independent).</summary>
     private (TimeSpan Start, TimeSpan End)? CurrentSelection()
     {
         if (_markers.Count < 2)
@@ -212,21 +230,8 @@ public partial class VideoEditorWindow : Window
             return null;
         }
 
-        var pos = Player.Position;
-
-        // Prefer the pair the playhead sits between.
-        for (int i = 0; i < _markers.Count - 1; i++)
-        {
-            if (pos >= _markers[i] && pos <= _markers[i + 1])
-            {
-                return (_markers[i], _markers[i + 1]);
-            }
-        }
-
-        // Playhead is outside every pair (before the first / after the last) — use the nearest end pair.
-        return pos < _markers[0]
-            ? (_markers[0], _markers[1])
-            : (_markers[^2], _markers[^1]);
+        // _markers is kept sorted, so [0] is the start and [1] is the end.
+        return (_markers[0], _markers[1]);
     }
 
     private void UpdateSelectionState()
@@ -316,9 +321,15 @@ public partial class VideoEditorWindow : Window
             Canvas.SetLeft(Playhead, XForTime(pos));
         }
 
-        TimeText.Text = $"{Format(pos)} / {Format(_duration)}";
+        // Time, plus a hint about the selection state so the marker model is never invisible.
+        var baseText = $"{Format(pos)} / {Format(_duration)}";
+        var selection = CurrentSelection();
+        TimeText.Text = selection is { } s
+            ? $"{baseText}   •   selection {Format(s.Start)}–{Format(s.End)}"
+            : _markers.Count == 1
+                ? $"{baseText}   •   1 marker — press M again to set the other edge"
+                : $"{baseText}   •   press M to set two markers";
 
-        // The active pair can change as the playhead crosses a marker.
         UpdateSelectionState();
     }
 
