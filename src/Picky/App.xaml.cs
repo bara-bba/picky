@@ -286,8 +286,7 @@ public partial class App : Application
         }
     }
 
-/// <summary>Accent-tinted app glyph for Window.Icon (title bar + taskbar).</summary>
-    /// <summary>
+/// <summary>
     /// Appends an unhandled exception to <c>%LocalAppData%\Picky\errors.log</c>. Logging must never
     /// itself throw, hence the blanket catch.
     /// </summary>
@@ -310,7 +309,8 @@ public partial class App : Application
         }
     }
 
-    internal System.Windows.Media.Imaging.BitmapSource CurrentIconSource()
+    /// <summary>Accent-tinted app glyph for Window.Icon (title bar + taskbar).</summary>
+    internal static System.Windows.Media.Imaging.BitmapSource CurrentIconSource()
         => AppIcon.CreateImageSource(ToDrawingColor(AccentTheme.Current), ToDrawingColor(AccentTheme.OnAccent));
 
     protected override void OnExit(ExitEventArgs e)

@@ -25,7 +25,7 @@ public partial class UpdatePromptWindow : Window
 
         // Use the accent-coloured app icon (like every other window) so the taskbar entry isn't the
         // static blue exe icon.
-        Icon = ((App)System.Windows.Application.Current).CurrentIconSource();
+        Icon = App.CurrentIconSource();
 
         MessageText.Text =
             $"Picky v{availableVersion} is available. You're on v{currentVersion}.";

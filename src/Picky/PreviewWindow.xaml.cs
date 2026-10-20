@@ -149,7 +149,7 @@ public partial class PreviewWindow : Window
     public PreviewWindow(Bitmap bitmap, string savedPath)
     {        InitializeComponent();
         DwmHelper.ApplyPowerToysChrome(this);
-        Icon = ((App)System.Windows.Application.Current).CurrentIconSource();
+        Icon = App.CurrentIconSource();
         _bitmap = bitmap;
         _savedPath = savedPath;
         PreviewImage.Source = ToBitmapSource(bitmap);

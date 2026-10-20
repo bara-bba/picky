@@ -87,10 +87,6 @@ internal static class ScreenCapture
         return CaptureRegion(bounds);
     }
 
-    /// <summary>Grabs the display the mouse pointer is on.</summary>
-    public static Bitmap CaptureMonitorUnderCursor(out Rectangle bounds)
-        => CaptureMonitor(MonitorInfo.FromCursor(), out bounds);
-
     /// <summary>
     /// Hands a GDI bitmap to WPF as a frozen, cross-thread-safe <see cref="ImageSource"/>.
     /// </summary>

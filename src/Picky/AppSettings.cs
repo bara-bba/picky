@@ -4,8 +4,8 @@ using System.Text.Json;
 namespace Picky;
 
 /// <summary>
-/// User settings persisted to %APPDATA%\Picky\settings.json.
-/// Currently just the folder captures are auto-saved into.
+/// User settings persisted to %APPDATA%\Picky\settings.json: capture folder, global
+/// hotkey, accent and pen colors, start-with-Windows, and any skipped update version.
 /// </summary>
 internal sealed class AppSettings
 {

@@ -63,7 +63,7 @@ public partial class GalleryWindow : Window
     {
         InitializeComponent();
         DwmHelper.ApplyPowerToysChrome(this);
-        Icon = ((App)System.Windows.Application.Current).CurrentIconSource();
+        Icon = App.CurrentIconSource();
         ThumbnailList.ItemsSource = _items;
 
         // Translucent accent for the marquee fill (was a hardcoded blue, which ignored the accent).
