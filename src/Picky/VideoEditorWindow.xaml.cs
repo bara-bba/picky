@@ -245,7 +245,6 @@ public partial class VideoEditorWindow : Window
         var selection = CurrentSelection();
         bool has = selection is not null;
 
-        TrimButton.IsEnabled = has;
         RemoveButton.IsEnabled = has;
 
         if (!has || Timeline.ActualWidth <= 0 || _duration <= TimeSpan.Zero)
@@ -413,21 +412,6 @@ public partial class VideoEditorWindow : Window
                 // Open the saved frame in the screenshot editor — the same annotate/save flow.
                 PreviewWindow.FromFile(result.OutputPath!).Show();
             });
-    }
-
-    /// <summary>Trims the working clip down to the selected span (keeps only what's between the markers).</summary>
-    private void TrimSelection_Click(object sender, RoutedEventArgs e)
-    {
-        var selection = CurrentSelection();
-        if (selection is null)
-        {
-            return;
-        }
-
-        var scratch = EditScratchPath();
-        RunFfmpegAction(
-            () => VideoEditor.ExportSpanTo(_workingPath, selection.Value.Start.TotalSeconds, selection.Value.End.TotalSeconds, scratch),
-            result => ApplyEdit(result.OutputPath!));
     }
 
     /// <summary>Cuts the selected span out of the working clip and keeps the rest.</summary>
@@ -601,7 +585,6 @@ public partial class VideoEditorWindow : Window
 
     private void SetBusy(bool busy)
     {
-        TrimButton.IsEnabled = !busy && CurrentSelection() is not null;
         RemoveButton.IsEnabled = !busy && CurrentSelection() is not null;
         FrameButton.IsEnabled = !busy;
         MarkerButton.IsEnabled = !busy;

@@ -22,41 +22,6 @@ internal static class VideoEditor
     }
 
     /// <summary>
-    /// Exports the span <paramref name="startSeconds"/>..<paramref name="endSeconds"/> to
-    /// <paramref name="outputPath"/>. Tries a lossless stream copy first; if that produces an empty
-    /// or unplayable file (keyframe misalignment can do this), re-encodes so the result is valid.
-    /// </summary>
-    public static Result ExportSpanTo(string sourcePath, double startSeconds, double endSeconds, string outputPath)
-    {
-        if (!TryValidateSpan(sourcePath, startSeconds, endSeconds, out var error))
-        {
-            return Result.Fail(error);
-        }
-
-        double duration = endSeconds - startSeconds;
-        var ss = Fmt(startSeconds);
-        var t = Fmt(duration);
-
-        // Accurate seek (-ss after -i) + stream copy keeps it lossless and fast.
-        if (Run($"-y -i \"{sourcePath}\" -ss {ss} -t {t} -c copy -movflags +faststart \"{outputPath}\"")
-            && IsNonEmpty(outputPath))
-        {
-            return Result.Success(outputPath);
-        }
-
-        // Copy failed or produced nothing — re-encode (slower, but always valid).
-        if (Run($"-y -ss {ss} -i \"{sourcePath}\" -t {t} -c:v libx264 -preset veryfast -crf 23 " +
-                $"-pix_fmt yuv420p -movflags +faststart \"{outputPath}\"")
-            && IsNonEmpty(outputPath))
-        {
-            return Result.Success(outputPath);
-        }
-
-        SafeDelete(outputPath);
-        return Result.Fail("ffmpeg could not export the selected span.");
-    }
-
-    /// <summary>
     /// Removes the span <paramref name="startSeconds"/>..<paramref name="endSeconds"/> and keeps the
     /// rest, writing to <paramref name="outputPath"/>. The two surviving pieces (<c>[0,start]</c>
     /// and <c>[end,eof]</c>) are re-encoded and concatenated through the filtergraph so the join is
