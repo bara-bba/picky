@@ -226,7 +226,7 @@ public partial class GalleryWindow : Window
 
         if (item.IsVideo)
         {
-            Process.Start(new ProcessStartInfo(item.Path) { UseShellExecute = true });
+            new VideoEditorWindow(item.Path).Show();
             return;
         }
 
