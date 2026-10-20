@@ -29,6 +29,7 @@
                 <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="*" />
             </Grid.ColumnDefinitions>
 
@@ -116,7 +117,19 @@
                     ToolTip="Preferences"
                     Margin="0,0,10,0" />
 
-            <Border Grid.Column="7"
+            <Button Grid.Column="7"
+                    Name="PinButton"
+                    Content="📌"
+                    FontSize="16"
+                    Padding="0"
+                    Width="38"
+                    Height="34"
+                    Click="PinButton_Click"
+                    Style="{StaticResource SubtleButton}"
+                    ToolTip="Pin the gallery open (don't close it when you click away)"
+                    Margin="0,0,10,0" />
+
+            <Border Grid.Column="8"
                     Background="{StaticResource Brush.Card}"
                     BorderBrush="{StaticResource Brush.Stroke}"
                     BorderThickness="1"

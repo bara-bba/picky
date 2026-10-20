@@ -44,6 +44,9 @@ public partial class GalleryWindow : Window
     /// <summary>When true (docked-after-capture mode), the window hides as soon as it loses focus.</summary>
     public bool AutoCloseOnDeactivate { get; set; }
 
+    // When pinned, the docked gallery stays open on click-away until the user unpins it.
+    private bool _pinned;
+
     // Set while a context menu is open, so losing focus to it doesn't auto-close the popup.
     private bool _suppressAutoClose;
 
@@ -138,7 +141,8 @@ public partial class GalleryWindow : Window
         }
 
         // A drag into another app deactivates us; closing mid-drag would abort the drop.
-        if (AutoCloseOnDeactivate && !_suppressAutoClose && !_modalOpen && !_dragging)
+        // _pinned keeps the popup open on click-away until the user unpins it.
+        if (AutoCloseOnDeactivate && !_pinned && !_suppressAutoClose && !_modalOpen && !_dragging)
         {
             _closing = true;
             Close();
@@ -953,6 +957,28 @@ public partial class GalleryWindow : Window
     }
 
     private void RefreshButton_Click(object sender, RoutedEventArgs e) => Refresh();
+
+    /// <summary>Toggles the pin: when pinned, clicking away won't auto-close the docked gallery.</summary>
+    private void PinButton_Click(object sender, RoutedEventArgs e)
+    {
+        _pinned = !_pinned;
+        UpdatePinButton();
+    }
+
+    /// <summary>Reflects the pin state on the button (accent fill + tooltip when pinned).</summary>
+    private void UpdatePinButton()
+    {
+        if (_pinned)
+        {
+            PinButton.Background = (System.Windows.Media.Brush)System.Windows.Application.Current.Resources["Brush.Accent"];
+            PinButton.ToolTip = "Gallery pinned open — click to unpin";
+        }
+        else
+        {
+            PinButton.ClearValue(BackgroundProperty);
+            PinButton.ToolTip = "Pin the gallery open (don't close it when you click away)";
+        }
+    }
 
     // --- Capture / record from the gallery toolbar ---
 
