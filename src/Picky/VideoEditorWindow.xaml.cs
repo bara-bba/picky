@@ -393,14 +393,8 @@ public partial class VideoEditorWindow : Window
             Canvas.SetLeft(Playhead, XForTime(pos));
         }
 
-        // Time, plus a hint about the selection state so the marker model is never invisible.
-        var baseText = $"{Format(pos)} / {Format(_duration)}";
-        var selection = CurrentSelection();
-        TimeText.Text = selection is { } s
-            ? $"{baseText}   •   selection {Format(s.Start)}–{Format(s.End)}"
-            : _markers.Count == 1
-                ? $"{baseText}   •   1 marker — press M again to set the other edge"
-                : $"{baseText}   •   press M to set two markers";
+        // Just the elapsed / total time — kept short so it never overflows the transport row.
+        TimeText.Text = $"{Format(pos)} / {Format(_duration)}";
 
         UpdateSelectionState();
     }
