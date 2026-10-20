@@ -1,3 +1,4 @@
+using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -6,63 +7,54 @@ using System.Windows.Shapes;
 using System.Windows.Threading;
 using Picky.Native;
 using Brush = System.Windows.Media.Brush;
-using SolidColorBrush = System.Windows.Media.SolidColorBrush;
-using Rectangle = System.Windows.Shapes.Rectangle;
+using Brushes = System.Windows.Media.Brushes;
 using Cursors = System.Windows.Input.Cursors;
+using Path = System.IO.Path;
+using SolidColorBrush = System.Windows.Media.SolidColorBrush;
+using WpfPath = System.Windows.Shapes.Path;
 
 namespace Picky;
 
 /// <summary>
-/// A small in-app video editor: play/scrub a recorded clip, drop markers (M), and act on the
-/// span between the two markers bracketing the playhead — export it, or cut it out. Also grabs
-/// the current frame as a screenshot and hands it to the existing <see cref="PreviewWindow"/>.
+/// Block-based clip editor, modelled on an NLE edit page (DaVinci Resolve's Edit page). The clip
+/// sits on the timeline as blocks: split at the playhead (M) as many times as you like, click blocks
+/// to select them (Ctrl = add/remove, Shift = range), delete them (the rest close up), or export
+/// them. Ctrl+Z / Ctrl+Y undo and redo every edit.
 ///
-/// <para>Playback is WPF <see cref="MediaElement"/> (Media Foundation). Every edit is done by
-/// <see cref="VideoEditor"/> through the bundled ffmpeg and writes a NEW file, so the original is
-/// never modified. If Media Foundation can't decode the clip, the preview shows a notice but the
-/// ffmpeg-based actions still work.</para>
+/// <para>Edits are non-destructive and instant: the timeline is just an ordered list of kept source
+/// ranges (<see cref="EditList"/>), and playback skips the removed parts live. ffmpeg only runs on
+/// Export, Save or Save a copy, rendering the current blocks in one pass.</para>
 /// </summary>
 public partial class VideoEditorWindow : Window
 {
     private readonly string _sourcePath;
+    private readonly DispatcherTimer _timer;
 
-    /// <summary>
-    /// The clip currently loaded in the player. Edits (trim/remove) rewrite this working copy in
-    /// place; <see cref="_dirty"/> then tracks whether it differs from <see cref="_sourcePath"/>.
-    /// Starts equal to the source and only diverges once an edit is applied — at which point it
-    /// points at a temp file under the scratch folder, never the original.
-    /// </summary>
-    private string _workingPath;
+    private IReadOnlyList<Segment> _segments = Array.Empty<Segment>();
+    private readonly Stack<IReadOnlyList<Segment>> _undo = new();
+    private readonly Stack<IReadOnlyList<Segment>> _redo = new();
 
-    /// <summary>True once an edit has been applied but not yet saved over the original or to a copy.</summary>
-    private bool _dirty;
+    /// <summary>The edit last written to a copy, so closing right after "Save a copy" doesn't nag.</summary>
+    private IReadOnlyList<Segment>? _savedCopy;
 
-    /// <summary>Marker positions, kept sorted. The selection is the span between the two that
-    /// bracket the playhead (or the nearest pair). Name-agnostic, list-based — no special "in/out".</summary>
-    private readonly List<TimeSpan> _markers = new();
+    private readonly HashSet<int> _selected = new();
+    private int _anchor = -1;
 
-    private readonly DispatcherTimer _playheadTimer;
-    private TimeSpan _duration;
+    private TimeSpan _sourceDuration;
+    private int _current;        // block the playhead is in
     private bool _playing;
     private bool _mediaReady;
+    private bool _scrubbing;
+    private bool _busy;
+    private bool _allowClose;    // set once a close-time save has finished
 
-    // Play/pause glyphs from the Windows icon font (Segoe Fluent Icons / Segoe MDL2 Assets, set on
-    // the button in XAML). They are a matched, monochrome pair with the same size and weight, unlike
-    // the Unicode ⏸, which Windows draws as a colour emoji.
-    private const string PlayGlyph = "\uE768";
-    private const string PauseGlyph = "\uE769";
-
-    // Timeline drag-to-select state: the press position, and whether the pointer has moved far
-    // enough to count as a drag (vs. a plain click, which just seeks).
-    private double _dragStartX;
-    private bool _dragArmed;
-    private bool _dragging;
-
-    /// <summary>Small step for ← / →; a larger jump is applied with Shift.</summary>
     private static readonly TimeSpan SmallStep = TimeSpan.FromMilliseconds(100);
     private static readonly TimeSpan LargeStep = TimeSpan.FromSeconds(2);
+    private static readonly object BlockTag = new();
 
-    /// <summary>Opens the editor for one recorded clip.</summary>
+    private static readonly Geometry PlayShape = Freeze(Geometry.Parse("M 0,0 L 11,6.5 L 0,13 Z"));
+    private static readonly Geometry PauseShape = Freeze(Geometry.Parse("M 0,0 H 3.6 V 13 H 0 Z M 7.4,0 H 11 V 13 H 7.4 Z"));
+
     public VideoEditorWindow(string sourcePath)
     {
         InitializeComponent();
@@ -70,78 +62,73 @@ public partial class VideoEditorWindow : Window
         Icon = App.CurrentIconSource();
 
         _sourcePath = sourcePath;
-        _workingPath = sourcePath;
-        Title = $"picky — {System.IO.Path.GetFileName(sourcePath)}";
+        Title = $"picky — {Path.GetFileName(sourcePath)}";
+        SetPlayGlyph(playing: false);
 
-        PlayPauseButton.Content = PlayGlyph;
-        SelectionBand.Fill = SelectionBrush();
-
-        // Drive the playhead/time readout while playing.
-        _playheadTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(33) };
-        _playheadTimer.Tick += (_, _) => SyncPlayhead();
+        _timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(15) };
+        _timer.Tick += (_, _) => OnTick();
 
         Loaded += (_, _) =>
         {
-            LoadWorking();
+            LoadSource();
             Focus();
         };
     }
 
-    /// <summary>(Re)loads <see cref="_workingPath"/> into the player and renders the first frame.</summary>
-    private void LoadWorking()
+    private static Geometry Freeze(Geometry g)
+    {
+        g.Freeze();
+        return g;
+    }
+
+    private bool Dirty => _segments.Count > 0
+        && !EditList.IsWhole(_segments, _sourceDuration)
+        && !ReferenceEquals(_segments, _savedCopy);
+
+    private TimeSpan Total => EditList.Total(_segments);
+
+    private TimeSpan ProgramPos => _segments.Count == 0
+        ? TimeSpan.Zero
+        : EditList.ToProgram(_segments, _current, Player.Position);
+
+    // --- Media ---
+
+    private void LoadSource()
     {
         _mediaReady = false;
-        Player.Source = new Uri(_workingPath);
-        // MediaElement needs a Play()/Pause() cycle to actually open and render the first frame.
-        Player.Play();
+        Player.Source = new Uri(_sourcePath);
+        Player.Play(); // a Play/Pause cycle makes MediaElement open and show the first frame
         Player.Pause();
     }
-
-    private static Brush SelectionBrush()
-    {
-        var c = AccentTheme.Current;
-        c.A = 0x40;
-        return new SolidColorBrush(c);
-    }
-
-    // --- Media lifecycle ---
 
     private void Player_MediaOpened(object sender, RoutedEventArgs e)
     {
         _mediaReady = true;
-        _duration = Player.NaturalDuration.HasTimeSpan ? Player.NaturalDuration.TimeSpan : TimeSpan.Zero;
-
-        // NaturalDuration is occasionally unavailable from WMF; fall back to an ffmpeg probe so the
-        // timeline still scales correctly.
-        if (_duration <= TimeSpan.Zero)
-        {
-            var seconds = VideoEditor.Probe(_workingPath);
-            _duration = TimeSpan.FromSeconds(seconds);
-        }
-
-        RenderTimeline();
-        SyncPlayhead();
-    }
-
-    private void Player_MediaEnded(object sender, RoutedEventArgs e)
-    {
-        // Pause at the final frame rather than rewinding, so trimming near the end is easy.
-        Player.Pause();
-        _playing = false;
-        _playheadTimer.Stop();
-        PlayPauseButton.Content = PlayGlyph;
+        var natural = Player.NaturalDuration.HasTimeSpan ? Player.NaturalDuration.TimeSpan : TimeSpan.Zero;
+        InitTimeline(natural > TimeSpan.Zero ? natural : TimeSpan.FromSeconds(VideoEditor.Probe(_sourcePath)));
     }
 
     private void Player_MediaFailed(object sender, ExceptionRoutedEventArgs e)
     {
-        // Can't preview — but ffmpeg edits don't need playback. Probe the duration so the timeline
-        // and marker math still work, and tell the user preview is unavailable.
+        // No preview, but blocks, export and frame capture still work through ffmpeg.
         _mediaReady = false;
         PlaybackError.Visibility = Visibility.Visible;
+        InitTimeline(TimeSpan.FromSeconds(VideoEditor.Probe(_sourcePath)));
+    }
 
-        var seconds = VideoEditor.Probe(_workingPath);
-        _duration = TimeSpan.FromSeconds(seconds);
-        RenderTimeline();
+    private void Player_MediaEnded(object sender, RoutedEventArgs e) => StopPlayback();
+
+    /// <summary>First open (or reopen after a save): the timeline is one block, the whole clip.</summary>
+    private void InitTimeline(TimeSpan duration)
+    {
+        _sourceDuration = duration;
+        if (_segments.Count == 0 && duration > TimeSpan.Zero)
+        {
+            _segments = EditList.Whole(duration);
+            _current = 0;
+        }
+        RenderBlocks();
+        UpdateButtons();
     }
 
     // --- Transport ---
@@ -150,519 +137,618 @@ public partial class VideoEditorWindow : Window
 
     private void TogglePlay()
     {
-        if (!_mediaReady)
+        if (!_mediaReady || _segments.Count == 0)
         {
             return;
         }
 
         if (_playing)
         {
-            Player.Pause();
-            _playing = false;
-            _playheadTimer.Stop();
-            PlayPauseButton.Content = PlayGlyph;
-            SyncPlayhead();
-        }
-        else
-        {
-            // Restart from the beginning if parked at the very end.
-            if (_duration > TimeSpan.Zero && Player.Position >= _duration - TimeSpan.FromMilliseconds(50))
-            {
-                Player.Position = TimeSpan.Zero;
-            }
-
-            Player.Play();
-            _playing = true;
-            _playheadTimer.Start();
-            PlayPauseButton.Content = PauseGlyph;
-        }
-    }
-
-    private void Seek(TimeSpan to)
-    {
-        if (_duration <= TimeSpan.Zero)
-        {
+            StopPlayback();
             return;
         }
 
-        var clamped = to < TimeSpan.Zero ? TimeSpan.Zero : (to > _duration ? _duration : to);
-        Player.Position = clamped;
+        if (Total - ProgramPos < TimeSpan.FromMilliseconds(50))
+        {
+            Seek(TimeSpan.Zero); // at the end: play again from the start
+        }
+
+        Player.Play();
+        _playing = true;
+        _timer.Start();
+        SetPlayGlyph(playing: true);
+    }
+
+    private void StopPlayback()
+    {
+        Player.Pause();
+        _playing = false;
+        _timer.Stop();
+        SetPlayGlyph(playing: false);
         SyncPlayhead();
     }
 
-    private void StepBy(TimeSpan delta) => Seek(Player.Position + delta);
-
-    // --- Markers & selection ---
-
-    private void AddMarker_Click(object sender, RoutedEventArgs e) => AddMarkerAtPlayhead();
-
-    /// <summary>
-    /// Drops a marker at the playhead. The selection is simply the span between the two markers, so
-    /// the model is capped at two: the first <c>M</c> sets the start, the second sets the end, and a
-    /// third replaces whichever existing marker is nearer (nudging that edge). This keeps the
-    /// selection explicit and independent of where the playhead later drifts.
-    /// </summary>
-    private void AddMarkerAtPlayhead()
+    /// <summary>While playing, jump over removed material at each block's end.</summary>
+    private void OnTick()
     {
-        if (_duration <= TimeSpan.Zero)
+        if (_playing && _segments.Count > 0)
+        {
+            var block = _segments[_current];
+            if (Player.Position >= block.End - TimeSpan.FromMilliseconds(20))
+            {
+                if (_current < _segments.Count - 1)
+                {
+                    _current++;
+                    Player.Position = _segments[_current].Start;
+                }
+                else
+                {
+                    Player.Position = block.End;
+                    StopPlayback();
+                    return;
+                }
+            }
+        }
+
+        SyncPlayhead();
+    }
+
+    private void SetPlayGlyph(bool playing)
+    {
+        PlayPauseButton.Content = new WpfPath
+        {
+            Data = playing ? PauseShape : PlayShape,
+            Fill = Brushes.White,
+            Width = 11,
+            Height = 13,
+            Stretch = Stretch.Fill,
+        };
+    }
+
+    /// <summary>Moves the playhead to a program time (clamped), mapping it to the right block.</summary>
+    private void Seek(TimeSpan program)
+    {
+        if (_segments.Count == 0)
         {
             return;
         }
 
-        var at = Player.Position;
-
-        // Ignore a duplicate within a frame's worth of an existing marker.
-        if (_markers.Any(m => Math.Abs((m - at).TotalMilliseconds) < 40))
-        {
-            return;
-        }
-
-        if (_markers.Count < 2)
-        {
-            _markers.Add(at);
-        }
-        else
-        {
-            // Replace the nearer of the two existing markers — the user is adjusting that edge.
-            int nearer = Math.Abs((_markers[0] - at).TotalMilliseconds) <= Math.Abs((_markers[1] - at).TotalMilliseconds)
-                ? 0
-                : 1;
-            _markers[nearer] = at;
-        }
-
-        _markers.Sort();
-        RenderTimeline();
-        UpdateSelectionState();
+        var total = Total;
+        program = program < TimeSpan.Zero ? TimeSpan.Zero : (program > total ? total : program);
+        var (index, source) = EditList.ToSource(_segments, program);
+        _current = index;
+        Player.Position = source;
+        SyncPlayhead();
     }
 
-    /// <summary>The span to act on: simply the span between the two markers (order-independent).</summary>
-    private (TimeSpan Start, TimeSpan End)? CurrentSelection()
+    /// <summary>Jumps to the previous / next cut (block edge), like Up/Down on an NLE timeline.</summary>
+    private void JumpToCut(int direction)
     {
-        if (_markers.Count < 2)
-        {
-            return null;
-        }
+        var pos = ProgramPos;
+        var edges = Enumerable.Range(0, _segments.Count + 1)
+            .Select(i => EditList.ProgramStart(_segments, i))
+            .ToList();
+        var tolerance = TimeSpan.FromMilliseconds(30);
 
-        // _markers is kept sorted, so [0] is the start and [1] is the end.
-        return (_markers[0], _markers[1]);
+        var target = direction > 0
+            ? edges.Where(t => t > pos + tolerance).DefaultIfEmpty(Total).First()
+            : edges.Where(t => t < pos - tolerance).DefaultIfEmpty(TimeSpan.Zero).Last();
+        Seek(target);
     }
 
-    private void UpdateSelectionState()
+    // --- Timeline ---
+
+    private void Timeline_SizeChanged(object sender, SizeChangedEventArgs e) => RenderBlocks();
+
+    private TimeSpan ProgramAtX(double x)
     {
-        var selection = CurrentSelection();
-        bool has = selection is not null;
-
-        RemoveButton.IsEnabled = has;
-
-        if (!has || Timeline.ActualWidth <= 0 || _duration <= TimeSpan.Zero)
-        {
-            SelectionBand.Visibility = Visibility.Collapsed;
-            return;
-        }
-
-        double x0 = XForTime(selection!.Value.Start);
-        double x1 = XForTime(selection.Value.End);
-        Canvas.SetLeft(SelectionBand, x0);
-        SelectionBand.Width = Math.Max(0, x1 - x0);
-        SelectionBand.Visibility = Visibility.Visible;
+        double fraction = Math.Clamp(x / Math.Max(1, Timeline.ActualWidth), 0, 1);
+        return TimeSpan.FromTicks((long)(Total.Ticks * fraction));
     }
-
-    // --- Timeline rendering ---
-
-    private void Timeline_SizeChanged(object sender, SizeChangedEventArgs e) => RenderTimeline();
 
     private void Timeline_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
-        if (_duration <= TimeSpan.Zero || Timeline.ActualWidth <= 0)
+        if (_segments.Count == 0 || _busy)
         {
             return;
         }
 
-        // Arm a possible drag-select; whether it becomes a drag or a plain seek is decided on move/up.
-        _dragStartX = e.GetPosition(Timeline).X;
-        _dragArmed = true;
-        _dragging = false;
+        var program = ProgramAtX(e.GetPosition(Timeline).X);
+        var (index, _) = EditList.ToSource(_segments, program);
+        SelectBlock(index, Keyboard.Modifiers);
+
+        // Pressing also parks the playhead there; keep dragging to scrub.
+        _scrubbing = true;
         Timeline.CaptureMouse();
+        Seek(program);
+        Focus();
     }
 
     private void Timeline_MouseMove(object sender, MouseEventArgs e)
     {
-        if (!_dragArmed || e.LeftButton != MouseButtonState.Pressed
-            || _duration <= TimeSpan.Zero || Timeline.ActualWidth <= 0)
+        if (_scrubbing && e.LeftButton == MouseButtonState.Pressed)
         {
-            return;
+            Seek(ProgramAtX(e.GetPosition(Timeline).X));
         }
-
-        double x = e.GetPosition(Timeline).X;
-
-        // Below the threshold it's still a click, not a drag.
-        if (!_dragging && Math.Abs(x - _dragStartX) < 4)
-        {
-            return;
-        }
-
-        _dragging = true;
-
-        // Drag start and current position become the two markers (sorted), so the selection band
-        // and Keep/Remove follow the drag live.
-        _markers.Clear();
-        _markers.Add(TimeAtX(_dragStartX));
-        _markers.Add(TimeAtX(x));
-        _markers.Sort();
-
-        RenderTimeline();
     }
 
     private void Timeline_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
     {
-        if (!_dragArmed)
-        {
-            return;
-        }
-
-        _dragArmed = false;
+        _scrubbing = false;
         Timeline.ReleaseMouseCapture();
+    }
 
-        double x = e.GetPosition(Timeline).X;
+    /// <summary>Click = select one, Ctrl+click = add/remove, Shift+click = range from the last click.</summary>
+    private void SelectBlock(int index, ModifierKeys modifiers)
+    {
+        bool ctrl = (modifiers & ModifierKeys.Control) != 0;
+        bool shift = (modifiers & ModifierKeys.Shift) != 0;
 
-        if (_dragging)
+        if (shift && _anchor >= 0)
         {
-            // Finalise the dragged selection; drop a degenerate (too-short) drag.
-            _dragging = false;
-            if (_markers.Count == 2 && (_markers[1] - _markers[0]).TotalMilliseconds < 50)
+            _selected.Clear();
+            for (int i = Math.Min(_anchor, index); i <= Math.Max(_anchor, index); i++)
             {
-                _markers.Clear();
+                _selected.Add(i);
             }
-            RenderTimeline();
+        }
+        else if (ctrl)
+        {
+            if (!_selected.Remove(index))
+            {
+                _selected.Add(index);
+            }
+            _anchor = index;
         }
         else
         {
-            // No drag — treat it as a plain seek to the clicked position.
-            Seek(TimeAtX(x));
+            _selected.Clear();
+            _selected.Add(index);
+            _anchor = index;
         }
+
+        RenderBlocks();
+        UpdateButtons();
     }
 
-    /// <summary>Clip time at a horizontal position on the timeline.</summary>
-    private TimeSpan TimeAtX(double x)
+    private void RenderBlocks()
     {
-        double fraction = Math.Clamp(x / Timeline.ActualWidth, 0, 1);
-        return TimeSpan.FromTicks((long)(_duration.Ticks * fraction));
-    }
-
-    private void RenderTimeline()
-    {
-        // Clear old marker ticks (keep the band + playhead, which live in XAML).
         for (int i = Timeline.Children.Count - 1; i >= 0; i--)
         {
-            if (Timeline.Children[i] is Rectangle r && ReferenceEquals(r.Tag, MarkerTag))
+            if (Timeline.Children[i] is FrameworkElement el && ReferenceEquals(el.Tag, BlockTag))
             {
                 Timeline.Children.RemoveAt(i);
             }
         }
 
-        if (_duration <= TimeSpan.Zero || Timeline.ActualWidth <= 0)
+        var total = Total;
+        double width = Timeline.ActualWidth;
+        if (total <= TimeSpan.Zero || width <= 0)
         {
+            SyncPlayhead();
             return;
         }
 
         var accent = (Brush)System.Windows.Application.Current.Resources["Brush.Accent"];
-        foreach (var marker in _markers)
+        var onAccent = (Brush)System.Windows.Application.Current.Resources["Brush.OnAccent"];
+        var idleFill = new SolidColorBrush(System.Windows.Media.Color.FromRgb(0x3A, 0x3A, 0x3A));
+        var idleEdge = new SolidColorBrush(System.Windows.Media.Color.FromRgb(0x50, 0x50, 0x50));
+        var idleText = (Brush)System.Windows.Application.Current.Resources["Brush.TextSecondary"];
+
+        for (int i = 0; i < _segments.Count; i++)
         {
-            var tick = new Rectangle
+            double x = width * (EditList.ProgramStart(_segments, i).Ticks / (double)total.Ticks);
+            double w = width * (_segments[i].Length.Ticks / (double)total.Ticks);
+            bool selected = _selected.Contains(i);
+
+            var block = new Border
             {
-                Width = 2,
+                Tag = BlockTag,
+                Width = Math.Max(2, w - 2),
                 Height = 42,
-                Fill = accent,
-                Tag = MarkerTag,
+                CornerRadius = new CornerRadius(3),
+                Background = selected ? accent : idleFill,
+                BorderBrush = selected ? accent : idleEdge,
+                BorderThickness = new Thickness(1),
                 IsHitTestVisible = false,
+                Child = w < 56 ? null : new TextBlock
+                {
+                    Text = $"{i + 1}   {Format(_segments[i].Length)}",
+                    FontSize = 11,
+                    Foreground = selected ? onAccent : idleText,
+                    Margin = new Thickness(6, 4, 4, 0),
+                    TextTrimming = TextTrimming.CharacterEllipsis,
+                },
             };
-            Canvas.SetLeft(tick, XForTime(marker));
-            Canvas.SetTop(tick, 1);
-            Timeline.Children.Add(tick);
+            Canvas.SetLeft(block, x + 1);
+            Canvas.SetTop(block, 4);
+            Timeline.Children.Add(block);
         }
 
-        UpdateSelectionState();
         SyncPlayhead();
     }
 
-    private static readonly object MarkerTag = new();
-
-    private double XForTime(TimeSpan t)
-        => _duration <= TimeSpan.Zero ? 0 : Timeline.ActualWidth * (t.Ticks / (double)_duration.Ticks);
-
     private void SyncPlayhead()
     {
-        var pos = Player.Position;
-
-        if (_duration > TimeSpan.Zero && Timeline.ActualWidth > 0)
+        var total = Total;
+        var pos = ProgramPos;
+        if (total > TimeSpan.Zero && Timeline.ActualWidth > 0)
         {
-            Canvas.SetLeft(Playhead, XForTime(pos));
+            Canvas.SetLeft(Playhead, Timeline.ActualWidth * (pos.Ticks / (double)total.Ticks) - 1);
+        }
+        TimeText.Text = $"{Format(pos)} / {Format(total)}";
+    }
+
+    private static string Format(TimeSpan t)
+        => $"{(int)t.TotalMinutes}:{t.Seconds:00}.{t.Milliseconds / 10:00}";
+
+    // --- Edits (all undoable) ---
+
+    /// <summary>Commits a new block list onto the undo stack and parks the playhead at <paramref name="playheadAfter"/>.</summary>
+    private void Commit(IReadOnlyList<Segment> next, TimeSpan playheadAfter)
+    {
+        if (ReferenceEquals(next, _segments))
+        {
+            return; // the operation was a no-op (cut on an edge, delete-everything refused)
         }
 
-        // Just the elapsed / total time — kept short so it never overflows the transport row.
-        TimeText.Text = $"{Format(pos)} / {Format(_duration)}";
+        _undo.Push(_segments);
+        _redo.Clear();
+        _segments = next;
+        _selected.Clear();
+        _anchor = -1;
 
-        UpdateSelectionState();
+        Seek(playheadAfter);
+        RenderBlocks();
+        UpdateButtons();
     }
 
-    private static string Format(TimeSpan t) => $"{(int)t.TotalMinutes}:{t.Seconds:00}.{t.Milliseconds / 10:00}";
+    private void Split_Click(object sender, RoutedEventArgs e) => SplitAtPlayhead();
 
-    // --- Actions ---
-
-    private void GrabFrame_Click(object sender, RoutedEventArgs e)
+    private void SplitAtPlayhead()
     {
-        var folder = App.Settings.EnsureCaptureFolder();
-        RunFfmpegAction(
-            () => VideoEditor.GrabFrame(_workingPath, Player.Position.TotalSeconds, folder),
-            result =>
-            {
-                // Surface it in the gallery like any other screenshot (docked, selected), so it's
-                // visibly saved there, then open it in the screenshot editor to annotate/save.
-                ((App)System.Windows.Application.Current).ShowGalleryDocked(result.OutputPath!);
-                PreviewWindow.FromFile(result.OutputPath!).Show();
-            });
-    }
-
-    /// <summary>Cuts the selected span out of the working clip and keeps the rest.</summary>
-    private void RemoveSelection_Click(object sender, RoutedEventArgs e)
-    {
-        var selection = CurrentSelection();
-        if (selection is null)
+        if (_segments.Count == 0 || _busy)
         {
             return;
         }
 
-        var scratch = EditScratchPath();
-        RunFfmpegAction(
-            () => VideoEditor.RemoveSpanTo(_workingPath, selection.Value.Start.TotalSeconds, selection.Value.End.TotalSeconds, scratch),
-            result => ApplyEdit(result.OutputPath!));
+        var pos = ProgramPos;
+        Commit(EditList.Split(_segments, pos), pos);
     }
 
-    /// <summary>
-    /// Makes <paramref name="editedPath"/> the new working copy: releases the player's lock on the
-    /// current clip, reloads from the edited file, marks the editor dirty, and resets markers (the
-    /// old positions no longer map onto the new, shorter timeline).
-    /// </summary>
-    private void ApplyEdit(string editedPath)
-    {
-        Player.Close(); // release the file handle on the previous working copy
+    private void Delete_Click(object sender, RoutedEventArgs e) => DeleteSelected();
 
-        // Delete the previous working copy if it was itself a scratch edit (never the original).
-        if (!string.Equals(_workingPath, _sourcePath, StringComparison.OrdinalIgnoreCase))
+    private void DeleteSelected()
+    {
+        if (_selected.Count == 0 || _busy)
         {
-            TryDelete(_workingPath);
+            return;
         }
 
-        _workingPath = editedPath;
-        _dirty = true;
-        _markers.Clear();
+        if (_selected.Count >= _segments.Count)
+        {
+            MessageBox.Show(this, "You can't delete every block — keep at least one.", "Picky — Video editor",
+                MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
 
-        LoadWorking();
-        UpdateSaveButtons();
+        var landAt = EditList.ProgramStart(_segments, _selected.Min());
+        Commit(EditList.Remove(_segments, _selected.ToList()), landAt);
+    }
+
+    private void Undo_Click(object sender, RoutedEventArgs e) => Undo();
+
+    private void Redo_Click(object sender, RoutedEventArgs e) => Redo();
+
+    private void Undo() => Restore(_undo, _redo);
+
+    private void Redo() => Restore(_redo, _undo);
+
+    private void Restore(Stack<IReadOnlyList<Segment>> from, Stack<IReadOnlyList<Segment>> to)
+    {
+        if (from.Count == 0 || _busy)
+        {
+            return;
+        }
+
+        var pos = ProgramPos;
+        to.Push(_segments);
+        _segments = from.Pop();
+        _selected.Clear();
+        _anchor = -1;
+
+        Seek(pos);
+        RenderBlocks();
+        UpdateButtons();
+    }
+
+    private void SelectAll()
+    {
+        _selected.Clear();
+        for (int i = 0; i < _segments.Count; i++)
+        {
+            _selected.Add(i);
+        }
+        RenderBlocks();
+        UpdateButtons();
+    }
+
+    // --- Export / frame ---
+
+    /// <summary>Renders the selected blocks, in timeline order, to a new clip in the capture folder.</summary>
+    private void Export_Click(object sender, RoutedEventArgs e)
+    {
+        if (_selected.Count == 0)
+        {
+            return;
+        }
+
+        var blocks = _selected.OrderBy(i => i).Select(i => _segments[i]).ToList();
+        var output = VideoEditor.FreePath(App.Settings.EnsureCaptureFolder(), _sourcePath, "export", ".mp4");
+
+        RunFfmpeg(
+            () => VideoEditor.Render(_sourcePath, blocks, output),
+            result => PickyApp.ShowGalleryDocked(result.OutputPath!));
+    }
+
+    private void GrabFrame_Click(object sender, RoutedEventArgs e)
+    {
+        var folder = App.Settings.EnsureCaptureFolder();
+        var at = Player.Position.TotalSeconds;
+
+        RunFfmpeg(
+            () => VideoEditor.GrabFrame(_sourcePath, at, folder),
+            result =>
+            {
+                // Lands in the gallery like any other screenshot, then opens for annotating.
+                PickyApp.ShowGalleryDocked(result.OutputPath!);
+                PickyApp.ShowEditor(PreviewWindow.FromFile(result.OutputPath!));
+            });
     }
 
     // --- Save ---
 
-    private void Save_Click(object sender, RoutedEventArgs e) => SaveOverOriginal();
+    private void Save_Click(object sender, RoutedEventArgs e) => SaveOverOriginal(closeAfter: false);
 
-    private void SaveCopy_Click(object sender, RoutedEventArgs e) => SaveCopy();
+    private void SaveCopy_Click(object sender, RoutedEventArgs e) => SaveCopy(closeAfter: false);
 
-    /// <summary>Overwrites the original clip with the edited working copy.</summary>
-    private bool SaveOverOriginal()
+    /// <summary>Renders the edit to a temp file, then replaces the original with it and reloads.</summary>
+    private void SaveOverOriginal(bool closeAfter)
     {
-        if (!_dirty)
+        if (!Dirty || _busy)
         {
-            return true;
+            return;
         }
 
-        try
-        {
-            // Release the player so the destination (and, when they're the same, the source) aren't
-            // locked, copy the working copy over the original, then reload so playback continues.
-            var resumeAt = Player.Position;
-            Player.Close();
-            System.IO.File.Copy(_workingPath, _sourcePath, overwrite: true);
+        var temp = VideoEditor.FreePath(EditsFolder(), _sourcePath, "render", Path.GetExtension(_sourcePath));
+        var blocks = _segments;
 
-            TryDelete(_workingPath);
-            _workingPath = _sourcePath;
-            _dirty = false;
+        RunFfmpeg(
+            () => VideoEditor.Render(_sourcePath, blocks, temp),
+            _ =>
+            {
+                try
+                {
+                    StopPlayback();
+                    Player.Close(); // release the original so it can be replaced
+                    File.Copy(temp, _sourcePath, overwrite: true);
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show(this, $"Couldn't save:\n{ex.Message}", "Picky — Video editor",
+                        MessageBoxButton.OK, MessageBoxImage.Warning);
+                    LoadSource();
+                    return;
+                }
+                finally
+                {
+                    TryDelete(temp);
+                }
 
-            LoadWorking();
-            UpdateSaveButtons();
+                // The saved file is the new whole clip: start again from one block.
+                _segments = Array.Empty<Segment>();
+                _undo.Clear();
+                _redo.Clear();
+                _selected.Clear();
+                _savedCopy = null;
 
-            // Refresh the gallery so its thumbnail/duration re-render from the saved file.
-            ((App)System.Windows.Application.Current).ShowGalleryDocked(_sourcePath);
-            return true;
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show(this, $"Couldn't save:\n{ex.Message}", "Picky — Video editor",
-                MessageBoxButton.OK, MessageBoxImage.Warning);
-            return false;
-        }
+                PickyApp.ShowGalleryDocked(_sourcePath);
+                if (closeAfter)
+                {
+                    _allowClose = true;
+                    Close();
+                    return;
+                }
+
+                LoadSource();
+                UpdateButtons();
+            });
     }
 
-    /// <summary>Saves the edited working copy to a new file the user picks, keeping the original.</summary>
-    private bool SaveCopy()
+    /// <summary>Renders the edit to a file the user picks, keeping the original untouched.</summary>
+    private void SaveCopy(bool closeAfter)
     {
+        if (_busy)
+        {
+            return;
+        }
+
         var dialog = new Microsoft.Win32.SaveFileDialog
         {
             Title = "Save a copy",
-            Filter = "MP4 video (*.mp4)|*.mp4",
-            InitialDirectory = System.IO.Path.GetDirectoryName(_sourcePath),
-            FileName = System.IO.Path.GetFileNameWithoutExtension(_sourcePath) + "_edited.mp4",
+            Filter = "MP4 video (*.mp4)|*.mp4|QuickTime video (*.mov)|*.mov",
+            InitialDirectory = Path.GetDirectoryName(_sourcePath),
+            FileName = Path.GetFileNameWithoutExtension(_sourcePath) + "_edited.mp4",
         };
 
         if (dialog.ShowDialog(this) != true)
         {
-            return false;
+            return;
         }
 
-        try
-        {
-            System.IO.File.Copy(_workingPath, dialog.FileName, overwrite: true);
-            _dirty = false;
-            UpdateSaveButtons();
-            ((App)System.Windows.Application.Current).ShowGalleryDocked(dialog.FileName);
-            return true;
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show(this, $"Couldn't save a copy:\n{ex.Message}", "Picky — Video editor",
-                MessageBoxButton.OK, MessageBoxImage.Warning);
-            return false;
-        }
+        var blocks = _segments;
+        var output = dialog.FileName;
+
+        RunFfmpeg(
+            () => VideoEditor.Render(_sourcePath, blocks, output),
+            result =>
+            {
+                _savedCopy = blocks;
+                UpdateButtons();
+                PickyApp.ShowGalleryDocked(result.OutputPath!);
+                if (closeAfter)
+                {
+                    _allowClose = true;
+                    Close();
+                }
+            });
     }
 
-    private void UpdateSaveButtons()
+    private static string EditsFolder()
     {
-        SaveButton.IsEnabled = _dirty;
-        SaveCopyButton.IsEnabled = _dirty;
-    }
-
-    /// <summary>A fresh temp path for one edit, under Picky's own cache folder (not the capture folder).</summary>
-    private static string EditScratchPath()
-    {
-        var folder = System.IO.Path.Combine(
+        var folder = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Picky", "edits");
-        System.IO.Directory.CreateDirectory(folder);
-        return System.IO.Path.Combine(folder, $"edit_{Guid.NewGuid():N}.mp4");
+        Directory.CreateDirectory(folder);
+        return folder;
     }
 
     private static void TryDelete(string path)
     {
         try
         {
-            if (System.IO.File.Exists(path))
+            if (File.Exists(path))
             {
-                System.IO.File.Delete(path);
+                File.Delete(path);
             }
         }
         catch
         {
-            // A lingering temp edit is harmless; it lives in Picky's own cache folder.
+            // A leftover temp render in Picky's own cache folder is harmless.
         }
     }
 
-    /// <summary>
-    /// Runs a (blocking) ffmpeg edit off the UI thread, disabling the action buttons meanwhile, then
-    /// invokes <paramref name="onSuccess"/> back on the UI thread. Failures show a message.
-    /// </summary>
-    private void RunFfmpegAction(Func<VideoEditor.Result> operation, Action<VideoEditor.Result> onSuccess)
+    private static App PickyApp => (App)System.Windows.Application.Current;
+
+    /// <summary>Runs an ffmpeg job off the UI thread with the toolbar disabled, then reports back.</summary>
+    private void RunFfmpeg(Func<VideoEditor.Result> job, Action<VideoEditor.Result> onSuccess)
     {
         SetBusy(true);
 
-        Task.Run(operation).ContinueWith(task =>
+        Task.Run(job).ContinueWith(task => Dispatcher.Invoke(() =>
         {
-            Dispatcher.Invoke(() =>
-            {
-                SetBusy(false);
+            SetBusy(false);
 
-                var result = task.Result;
-                if (result.Ok)
-                {
-                    onSuccess(result);
-                }
-                else
-                {
-                    MessageBox.Show(this, result.Error ?? "The operation failed.", "Picky — Video editor",
-                        MessageBoxButton.OK, MessageBoxImage.Warning);
-                }
-            });
-        });
+            var result = task.IsFaulted ? VideoEditor.Result.Fail("The operation failed.") : task.Result;
+            if (result.Ok)
+            {
+                onSuccess(result);
+            }
+            else
+            {
+                MessageBox.Show(this, result.Error ?? "The operation failed.", "Picky — Video editor",
+                    MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+        }));
     }
 
     private void SetBusy(bool busy)
     {
-        RemoveButton.IsEnabled = !busy && CurrentSelection() is not null;
-        FrameButton.IsEnabled = !busy;
-        MarkerButton.IsEnabled = !busy;
-        SaveButton.IsEnabled = !busy && _dirty;
-        SaveCopyButton.IsEnabled = !busy && _dirty;
+        _busy = busy;
         Cursor = busy ? Cursors.Wait : Cursors.Arrow;
+        UpdateButtons();
+    }
+
+    private void UpdateButtons()
+    {
+        bool idle = !_busy && _segments.Count > 0;
+        SplitButton.IsEnabled = idle;
+        FrameButton.IsEnabled = !_busy;
+        DeleteButton.IsEnabled = idle && _selected.Count > 0 && _selected.Count < _segments.Count;
+        ExportButton.IsEnabled = idle && _selected.Count > 0;
+        UndoButton.IsEnabled = idle && _undo.Count > 0;
+        RedoButton.IsEnabled = idle && _redo.Count > 0;
+        SaveButton.IsEnabled = idle && Dirty;
+        SaveCopyButton.IsEnabled = idle && !EditList.IsWhole(_segments, _sourceDuration);
     }
 
     // --- Keyboard ---
 
-    protected override void OnKeyDown(KeyEventArgs e)
+    /// <summary>Preview, so Space/arrows reach the editor even when a toolbar button has focus.</summary>
+    protected override void OnPreviewKeyDown(KeyEventArgs e)
     {
-        bool ctrl = (Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control;
+        bool ctrl = (Keyboard.Modifiers & ModifierKeys.Control) != 0;
+        bool shift = (Keyboard.Modifiers & ModifierKeys.Shift) != 0;
+        bool handled = true;
 
-        if (ctrl && e.Key == Key.S)
+        if (ctrl)
         {
-            SaveOverOriginal();
-            e.Handled = true;
-            base.OnKeyDown(e);
-            return;
+            switch (e.Key)
+            {
+                case Key.Z when shift: Redo(); break;
+                case Key.Z: Undo(); break;
+                case Key.Y: Redo(); break;
+                case Key.S: SaveOverOriginal(closeAfter: false); break;
+                case Key.A: SelectAll(); break;
+                case Key.B: SplitAtPlayhead(); break;
+                default: handled = false; break;
+            }
+        }
+        else
+        {
+            switch (e.Key)
+            {
+                case Key.Space: TogglePlay(); break;
+                case Key.M: SplitAtPlayhead(); break;
+                case Key.Delete:
+                case Key.Back: DeleteSelected(); break;
+                case Key.Left: Seek(ProgramPos - (shift ? LargeStep : SmallStep)); break;
+                case Key.Right: Seek(ProgramPos + (shift ? LargeStep : SmallStep)); break;
+                case Key.Up: JumpToCut(-1); break;
+                case Key.Down: JumpToCut(+1); break;
+                case Key.Home: Seek(TimeSpan.Zero); break;
+                case Key.End: Seek(Total); break;
+                case Key.Escape:
+                    if (_selected.Count > 0)
+                    {
+                        _selected.Clear();
+                        RenderBlocks();
+                        UpdateButtons();
+                    }
+                    else
+                    {
+                        Close();
+                    }
+                    break;
+                default: handled = false; break;
+            }
         }
 
-        switch (e.Key)
-        {
-            case Key.Space:
-                TogglePlay();
-                e.Handled = true;
-                break;
-
-            case Key.M:
-                AddMarkerAtPlayhead();
-                e.Handled = true;
-                break;
-
-            case Key.Left:
-                StepBy(ShiftHeld ? -LargeStep : -SmallStep);
-                e.Handled = true;
-                break;
-
-            case Key.Right:
-                StepBy(ShiftHeld ? LargeStep : SmallStep);
-                e.Handled = true;
-                break;
-
-            case Key.Escape:
-                Close();
-                e.Handled = true;
-                break;
-        }
-
-        base.OnKeyDown(e);
+        e.Handled = handled;
+        base.OnPreviewKeyDown(e);
     }
 
-    private static bool ShiftHeld => (Keyboard.Modifiers & ModifierKeys.Shift) == ModifierKeys.Shift;
+    // --- Closing ---
 
     protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
     {
-        // Prompt before discarding unsaved trims, the same Save / Save a copy / Discard / Cancel
-        // choice the screenshot editor offers.
-        if (_dirty)
+        if (_busy)
+        {
+            e.Cancel = true; // don't close mid-render
+            return;
+        }
+
+        if (!_allowClose && Dirty)
         {
             switch (AskSaveChanges())
             {
                 case SaveChoice.Save:
-                    if (!SaveOverOriginal()) { e.Cancel = true; return; }
-                    break;
+                    e.Cancel = true;
+                    SaveOverOriginal(closeAfter: true); // closes itself once the render is done
+                    return;
                 case SaveChoice.SaveCopy:
-                    if (!SaveCopy()) { e.Cancel = true; return; }
-                    break;
+                    e.Cancel = true;
+                    SaveCopy(closeAfter: true);
+                    return;
                 case SaveChoice.Discard:
                     break;
                 default:
@@ -674,57 +760,49 @@ public partial class VideoEditorWindow : Window
         base.OnClosing(e);
     }
 
-    private enum SaveChoice { Save, SaveCopy, Discard, Cancel }
-
-    private SaveChoice AskSaveChanges()
+    protected override void OnClosed(EventArgs e)
     {
-        var result = WinFormsMessageBox(
-            "You've edited this clip. Save your changes to the original?",
-            "Picky — Video editor");
-        return result;
+        _timer.Stop();
+        Player.Close();
+        base.OnClosed(e);
     }
 
-    /// <summary>
-    /// Four-way save prompt. Reused shape from the screenshot editor's dialog, kept minimal here:
-    /// Yes = overwrite original, No = save a copy, Cancel = keep editing; discard is offered via a
-    /// third explicit path below.
-    /// </summary>
-    private SaveChoice WinFormsMessageBox(string message, string title)
+    private enum SaveChoice { Save, SaveCopy, Discard, Cancel }
+
+    /// <summary>Save / Save a copy / Don't save / Cancel, styled like the screenshot editor's prompt.</summary>
+    private SaveChoice AskSaveChanges()
     {
-        // A compact custom dialog so all four choices are explicit (a 3-button MessageBox can't show
-        // Save / Save a copy / Discard / Cancel together).
         var choice = SaveChoice.Cancel;
+        var resources = System.Windows.Application.Current.Resources;
 
         var dialog = new Window
         {
-            Title = title,
+            Title = "Save changes?",
             SizeToContent = SizeToContent.WidthAndHeight,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
             Owner = this,
             WindowStyle = WindowStyle.None,
             ResizeMode = ResizeMode.NoResize,
-            Background = (Brush)System.Windows.Application.Current.Resources["Brush.App"],
-            Foreground = (Brush)System.Windows.Application.Current.Resources["Brush.TextPrimary"],
+            Background = (Brush)resources["Brush.App"],
+            Foreground = (Brush)resources["Brush.TextPrimary"],
             FontFamily = new System.Windows.Media.FontFamily("Segoe UI Variable, Segoe UI"),
         };
 
-        var text = new TextBlock
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
+        buttons.Children.Add(DialogButton("Save", "AccentButton", () => { choice = SaveChoice.Save; dialog.Close(); }));
+        buttons.Children.Add(DialogButton("Save a copy…", "SubtleButton", () => { choice = SaveChoice.SaveCopy; dialog.Close(); }));
+        buttons.Children.Add(DialogButton("Don't save", "SubtleButton", () => { choice = SaveChoice.Discard; dialog.Close(); }));
+        buttons.Children.Add(DialogButton("Cancel", "SubtleButton", () => { choice = SaveChoice.Cancel; dialog.Close(); }));
+
+        var panel = new StackPanel();
+        panel.Children.Add(new TextBlock
         {
-            Text = message,
+            Text = "You've edited this clip. Save your changes?",
             FontSize = 14,
             TextWrapping = TextWrapping.Wrap,
             MaxWidth = 340,
             Margin = new Thickness(0, 0, 0, 16),
-        };
-
-        var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
-        buttons.Children.Add(MakeDialogButton("Save", "AccentButton", () => { choice = SaveChoice.Save; dialog.Close(); }));
-        buttons.Children.Add(MakeDialogButton("Save a copy…", "SubtleButton", () => { choice = SaveChoice.SaveCopy; dialog.Close(); }));
-        buttons.Children.Add(MakeDialogButton("Don't save", "SubtleButton", () => { choice = SaveChoice.Discard; dialog.Close(); }));
-        buttons.Children.Add(MakeDialogButton("Cancel", "SubtleButton", () => { choice = SaveChoice.Cancel; dialog.Close(); }));
-
-        var panel = new StackPanel();
-        panel.Children.Add(text);
+        });
         panel.Children.Add(buttons);
         dialog.Content = new Border { Padding = new Thickness(20), Child = panel };
 
@@ -733,7 +811,7 @@ public partial class VideoEditorWindow : Window
         return choice;
     }
 
-    private static Button MakeDialogButton(string content, string styleKey, Action onClick)
+    private static Button DialogButton(string content, string styleKey, Action onClick)
     {
         var button = new Button
         {
@@ -744,19 +822,5 @@ public partial class VideoEditorWindow : Window
         };
         button.Click += (_, _) => onClick();
         return button;
-    }
-
-    protected override void OnClosed(EventArgs e)
-    {
-        _playheadTimer.Stop();
-        Player.Close();
-
-        // Drop a lingering scratch edit (the working copy was a temp file, never the original).
-        if (!string.Equals(_workingPath, _sourcePath, StringComparison.OrdinalIgnoreCase))
-        {
-            TryDelete(_workingPath);
-        }
-
-        base.OnClosed(e);
     }
 }

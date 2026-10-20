@@ -11,21 +11,31 @@
         FontFamily="Segoe UI Variable, Segoe UI"
         WindowStartupLocation="CenterScreen"
         Focusable="True">
+    <Window.Resources>
+        <!-- Toolbar icon: borderless, icon-font glyph, dimmed when disabled. -->
+        <Style x:Key="EditorIcon" TargetType="Button" BasedOn="{StaticResource IconButton}">
+            <Setter Property="FontFamily" Value="Segoe Fluent Icons, Segoe MDL2 Assets" />
+            <Setter Property="FontSize" Value="15" />
+            <Setter Property="Width" Value="34" />
+            <Setter Property="Height" Value="30" />
+            <Setter Property="Margin" Value="0,0,4,0" />
+            <Style.Triggers>
+                <Trigger Property="IsEnabled" Value="False">
+                    <Setter Property="Opacity" Value="0.35" />
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+    </Window.Resources>
+
     <Grid Margin="16">
         <Grid.RowDefinitions>
             <RowDefinition Height="*" />
-            <!-- video -->
             <RowDefinition Height="Auto" />
-            <!-- timeline -->
             <RowDefinition Height="Auto" />
-            <!-- transport + actions -->
         </Grid.RowDefinitions>
 
         <!-- Video surface -->
-        <Border Grid.Row="0"
-                Background="#FF101010"
-                CornerRadius="6"
-                ClipToBounds="True">
+        <Border Grid.Row="0" Background="#FF101010" CornerRadius="6" ClipToBounds="True">
             <Grid>
                 <MediaElement Name="Player"
                               LoadedBehavior="Manual"
@@ -35,11 +45,9 @@
                               MediaOpened="Player_MediaOpened"
                               MediaEnded="Player_MediaEnded"
                               MediaFailed="Player_MediaFailed" />
-
-                <!-- Shown if WMF can't decode the clip; cutting + frame grab still work via ffmpeg. -->
                 <TextBlock Name="PlaybackError"
                            Visibility="Collapsed"
-                           Text="Can't preview this clip's codec — trimming and frame capture still work."
+                           Text="Can't preview this clip's codec — editing and frame capture still work."
                            Foreground="{StaticResource Brush.TextSecondary}"
                            TextWrapping="Wrap"
                            MaxWidth="420"
@@ -49,10 +57,10 @@
             </Grid>
         </Border>
 
-        <!-- Timeline: clickable track, marker ticks, shaded selection band, playhead -->
+        <!-- Timeline: one block per kept segment, plus the playhead. Blocks are built in code. -->
         <Border Grid.Row="1"
                 Margin="0,12,0,0"
-                Height="44"
+                Height="52"
                 Background="{StaticResource Brush.Card}"
                 BorderBrush="{StaticResource Brush.Stroke}"
                 BorderThickness="1"
@@ -64,20 +72,13 @@
                     MouseMove="Timeline_MouseMove"
                     MouseLeftButtonUp="Timeline_MouseLeftButtonUp"
                     SizeChanged="Timeline_SizeChanged">
-                <!-- Selection band (between the two active markers). -->
-                <Rectangle Name="SelectionBand"
-                           Height="42"
-                           Canvas.Top="1"
-                           Visibility="Collapsed"
-                           IsHitTestVisible="False" />
-                <!-- Playhead. -->
                 <Rectangle Name="Playhead"
                            Width="2"
-                           Height="42"
-                           Canvas.Top="1"
+                           Height="50"
+                           Canvas.Top="0"
+                           Panel.ZIndex="100"
                            Fill="{StaticResource Brush.TextPrimary}"
                            IsHitTestVisible="False" />
-                <!-- Marker ticks are added in code. -->
             </Canvas>
         </Border>
 
@@ -85,22 +86,16 @@
         <Grid Grid.Row="2" Margin="0,12,0,0">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="Auto" />
-                <!-- play/pause -->
                 <ColumnDefinition Width="Auto" />
-                <!-- time -->
                 <ColumnDefinition Width="*" />
-                <!-- spacer -->
                 <ColumnDefinition Width="Auto" />
-                <!-- actions -->
             </Grid.ColumnDefinitions>
 
+            <!-- Content is a filled vector triangle / bars, set in code. -->
             <Button Grid.Column="0"
                     Name="PlayPauseButton"
-                    FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
-                    FontSize="14"
                     Width="34"
                     Height="30"
-                    Padding="0"
                     Click="PlayPause_Click"
                     Style="{StaticResource IconButton}"
                     ToolTip="Play / pause (Space)"
@@ -114,63 +109,35 @@
                        VerticalAlignment="Center" />
 
             <StackPanel Grid.Column="3" Orientation="Horizontal">
-                <Button Name="MarkerButton"
-                        Content="⚑"
-                        FontSize="15"
-                        Width="34"
-                        Height="30"
-                        Padding="0"
-                        Click="AddMarker_Click"
-                        Style="{StaticResource IconButton}"
-                        ToolTip="Drop a marker at the playhead (M)"
-                        Margin="0,0,4,0" />
-                <Button Name="FrameButton"
-                        Content="⛶"
-                        FontSize="15"
-                        Width="34"
-                        Height="30"
-                        Padding="0"
-                        Click="GrabFrame_Click"
-                        Style="{StaticResource IconButton}"
-                        ToolTip="Save the current frame as a screenshot and open it in the editor"
-                        Margin="0,0,4,0" />
-                <Button Name="RemoveButton"
-                        Content="✂"
-                        FontSize="15"
-                        Width="34"
-                        Height="30"
-                        Padding="0"
-                        Click="RemoveSelection_Click"
-                        Style="{StaticResource IconButton}"
-                        ToolTip="Cut the span between the two markers out and keep the rest"
-                        IsEnabled="False"
-                        Margin="0,0,4,0" />
+                <Button Name="SplitButton" Content="&#xE8C6;" Click="Split_Click" Style="{StaticResource EditorIcon}"
+                        ToolTip="Split the block at the playhead (M)" />
+                <Button Name="DeleteButton" Content="&#xE74D;" Click="Delete_Click" Style="{StaticResource EditorIcon}"
+                        ToolTip="Delete the selected blocks; the rest close up (Delete)" IsEnabled="False" />
+                <Button Name="ExportButton" Content="&#xEDE1;" Click="Export_Click" Style="{StaticResource EditorIcon}"
+                        ToolTip="Export the selected blocks to a new clip in the capture folder" IsEnabled="False" />
+                <Button Name="FrameButton" Content="&#xE722;" Click="GrabFrame_Click" Style="{StaticResource EditorIcon}"
+                        ToolTip="Save the current frame as a screenshot" />
 
-                <Border Width="1"
-                        Background="{StaticResource Brush.Stroke}"
-                        Margin="6,2,10,2" />
+                <Border Width="1" Background="{StaticResource Brush.Stroke}" Margin="6,2,10,2" />
 
-                <Button Name="SaveButton"
-                        Content="💾"
-                        FontSize="15"
-                        Width="34"
-                        Height="30"
-                        Padding="0"
-                        Click="Save_Click"
-                        Style="{StaticResource IconButton}"
-                        ToolTip="Overwrite the original clip with your edits (Ctrl+S)"
-                        IsEnabled="False"
-                        Margin="0,0,4,0" />
-                <Button Name="SaveCopyButton"
-                        Content="🗐"
-                        FontSize="15"
-                        Width="34"
-                        Height="30"
-                        Padding="0"
-                        Click="SaveCopy_Click"
-                        Style="{StaticResource IconButton}"
-                        ToolTip="Save your edits to a new file, keeping the original"
-                        IsEnabled="False" />
+                <Button Name="UndoButton" Content="&#xE7A7;" Click="Undo_Click" Style="{StaticResource EditorIcon}"
+                        ToolTip="Undo (Ctrl+Z)" IsEnabled="False" />
+                <Button Name="RedoButton" Content="&#xE7A6;" Click="Redo_Click" Style="{StaticResource EditorIcon}"
+                        ToolTip="Redo (Ctrl+Y)" IsEnabled="False" />
+
+                <Border Width="1" Background="{StaticResource Brush.Stroke}" Margin="6,2,10,2" />
+
+                <Button Name="SaveButton" Content="&#xE74E;" Click="Save_Click" Style="{StaticResource EditorIcon}"
+                        ToolTip="Save over the original clip (Ctrl+S)" IsEnabled="False" />
+                <!-- Save a copy: the save glyph with a small arrow on its corner. -->
+                <Button Name="SaveCopyButton" Click="SaveCopy_Click" Style="{StaticResource EditorIcon}"
+                        ToolTip="Save a copy, keeping the original" IsEnabled="False" Margin="0">
+                    <Grid Width="20" Height="18">
+                        <TextBlock Text="&#xE74E;" FontSize="15" HorizontalAlignment="Left" VerticalAlignment="Top" />
+                        <TextBlock Text="&#xE72A;" FontSize="9" FontWeight="Bold"
+                                   HorizontalAlignment="Right" VerticalAlignment="Bottom" />
+                    </Grid>
+                </Button>
             </StackPanel>
         </Grid>
     </Grid>
