@@ -46,10 +46,11 @@ public partial class VideoEditorWindow : Window
     private bool _playing;
     private bool _mediaReady;
 
-    // Play/pause glyphs. The trailing U+FE0E (text variation selector) forces a flat monochrome
-    // render so the pause doesn't come out as a mismatched colour emoji next to the play triangle.
-    private const string PlayGlyph = "\u25B6\uFE0E";   // ▶
-    private const string PauseGlyph = "\u23F8\uFE0E";  // ⏸
+    // Play/pause glyphs from the Windows icon font (Segoe Fluent Icons / Segoe MDL2 Assets, set on
+    // the button in XAML). They are a matched, monochrome pair with the same size and weight, unlike
+    // the Unicode ⏸, which Windows draws as a colour emoji.
+    private const string PlayGlyph = "\uE768";
+    private const string PauseGlyph = "\uE769";
 
     // Timeline drag-to-select state: the press position, and whether the pointer has moved far
     // enough to count as a drag (vs. a plain click, which just seeks).

@@ -96,8 +96,8 @@
 
             <Button Grid.Column="0"
                     Name="PlayPauseButton"
-                    Content="▶"
-                    FontSize="15"
+                    FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
+                    FontSize="14"
                     Width="34"
                     Height="30"
                     Padding="0"
