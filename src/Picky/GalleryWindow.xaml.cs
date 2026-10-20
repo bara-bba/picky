@@ -74,6 +74,9 @@ public partial class GalleryWindow : Window
         wash.A = 0x33;
         MarqueeRect.Fill = new SolidColorBrush(wash);
 
+        // Restore the saved pin; the Checked handler applies Topmost and the pinned glyph.
+        PinButton.IsChecked = App.Settings.GalleryPinned;
+
         Refresh();
     }
 
@@ -126,6 +129,13 @@ public partial class GalleryWindow : Window
     protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
     {
         _closing = true;
+
+        // Editors adopted while pinned would otherwise close together with their owner.
+        foreach (Window owned in OwnedWindows.Cast<Window>().ToList())
+        {
+            owned.Owner = null;
+        }
+
         base.OnClosing(e);
     }
 
@@ -238,11 +248,11 @@ public partial class GalleryWindow : Window
 
         if (item.IsVideo)
         {
-            new VideoEditorWindow(item.Path).Show();
+            PickyApp.ShowEditor(new VideoEditorWindow(item.Path));
         }
         else
         {
-            PreviewWindow.FromFile(item.Path).Show();
+            PickyApp.ShowEditor(PreviewWindow.FromFile(item.Path));
         }
     }
 
@@ -958,25 +968,42 @@ public partial class GalleryWindow : Window
 
     private void RefreshButton_Click(object sender, RoutedEventArgs e) => Refresh();
 
-    /// <summary>Toggles the pin: when pinned, clicking away won't auto-close the docked gallery.</summary>
-    private void PinButton_Click(object sender, RoutedEventArgs e)
+    /// <summary>True while the gallery is pinned: it ignores click-away and stays above other apps.</summary>
+    public bool IsPinned => _pinned;
+
+    /// <summary>
+    /// Pin toggled. Pinning does two things: click-away no longer closes the docked gallery, and the
+    /// window goes Topmost. Without Topmost a "pinned" gallery still vanishes behind whatever app you
+    /// clicked into, which looks exactly like it closed. The choice is saved, so it survives the
+    /// gallery being reopened and app restarts.
+    /// </summary>
+    private void PinButton_Changed(object sender, RoutedEventArgs e)
     {
-        _pinned = !_pinned;
-        UpdatePinButton();
+        _pinned = PinButton.IsChecked == true;
+        Topmost = _pinned;
+
+        PinButton.Content = _pinned ? "\uE840" : "\uE718"; // Pinned (filled) / Pin
+        PinButton.ToolTip = _pinned
+            ? "Gallery pinned open — click to unpin"
+            : "Pin the gallery open (don't close it when you click away)";
+
+        if (App.Settings.GalleryPinned != _pinned)
+        {
+            App.Settings.GalleryPinned = _pinned;
+            App.Settings.Save();
+        }
     }
 
-    /// <summary>Reflects the pin state on the button (accent fill + tooltip when pinned).</summary>
-    private void UpdatePinButton()
+    /// <summary>
+    /// Editors opened while the gallery is pinned are owned by it, so they stack above the Topmost
+    /// gallery instead of opening hidden behind it. Ownership is released before the gallery closes
+    /// (see <see cref="OnClosing"/>) so closing the gallery never takes an open editor with it.
+    /// </summary>
+    internal void AdoptIfPinned(Window editor)
     {
-        if (_pinned)
+        if (_pinned && IsVisible)
         {
-            PinButton.Background = (System.Windows.Media.Brush)System.Windows.Application.Current.Resources["Brush.Accent"];
-            PinButton.ToolTip = "Gallery pinned open — click to unpin";
-        }
-        else
-        {
-            PinButton.ClearValue(BackgroundProperty);
-            PinButton.ToolTip = "Pin the gallery open (don't close it when you click away)";
+            editor.Owner = this;
         }
     }
 

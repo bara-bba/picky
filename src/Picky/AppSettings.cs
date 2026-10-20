@@ -26,6 +26,9 @@ internal sealed class AppSettings
     /// </summary>
     public bool StartWithWindows { get; set; }
 
+    /// <summary>Whether the gallery is pinned open (stays on top, ignores click-away).</summary>
+    public bool GalleryPinned { get; set; }
+
     /// <summary>
     /// A release version the user chose to skip. Automatic checks (launch / periodic) stay quiet for
     /// exactly this version; a newer release, or a manual "Check for updates", prompts again.

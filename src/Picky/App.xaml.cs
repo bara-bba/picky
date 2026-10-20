@@ -688,6 +688,16 @@ public partial class App : Application
 
     public void ShowGallery() => ShowGallery(dockLowerRight: false, selectPath: null);
 
+    /// <summary>
+    /// Shows an editor window. When the gallery is pinned (Topmost), the editor is owned by it so it
+    /// opens above the gallery instead of hidden behind it.
+    /// </summary>
+    internal void ShowEditor(Window editor)
+    {
+        _gallery?.AdoptIfPinned(editor);
+        editor.Show();
+    }
+
     /// <summary>Pops the gallery anchored to the lower-right corner (Screenpresso-style).</summary>
     public void ShowGalleryDocked() => ShowGallery(dockLowerRight: true, selectPath: null);
 

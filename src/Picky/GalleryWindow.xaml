@@ -117,17 +117,18 @@
                     ToolTip="Preferences"
                     Margin="0,0,10,0" />
 
-            <Button Grid.Column="7"
-                    Name="PinButton"
-                    Content="📌"
-                    FontSize="16"
-                    Padding="0"
-                    Width="38"
-                    Height="34"
-                    Click="PinButton_Click"
-                    Style="{StaticResource SubtleButton}"
-                    ToolTip="Pin the gallery open (don't close it when you click away)"
-                    Margin="0,0,10,0" />
+            <ToggleButton Grid.Column="7"
+                          Name="PinButton"
+                          Content="&#xE718;"
+                          FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
+                          FontSize="14"
+                          Width="38"
+                          Height="34"
+                          Checked="PinButton_Changed"
+                          Unchecked="PinButton_Changed"
+                          Style="{StaticResource ToggleIconButton}"
+                          ToolTip="Pin the gallery open (don't close it when you click away)"
+                          Margin="0,0,10,0" />
 
             <Border Grid.Column="8"
                     Background="{StaticResource Brush.Card}"

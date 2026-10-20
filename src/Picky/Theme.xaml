@@ -170,6 +170,48 @@
         </Setter>
     </Style>
 
+    <!-- Icon toggle (e.g. the gallery pin): subtle when off, accent-filled when on, and the on-state
+         stays visible while hovered so a click gives immediate feedback. -->
+    <Style x:Key="ToggleIconButton" TargetType="ToggleButton">
+        <Setter Property="Foreground" Value="{StaticResource Brush.TextPrimary}" />
+        <Setter Property="Background" Value="{StaticResource Brush.Subtle}" />
+        <Setter Property="BorderBrush" Value="{StaticResource Brush.StrokeSubtle}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="Cursor" Value="Hand" />
+        <Setter Property="SnapsToDevicePixels" Value="True" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ToggleButton">
+                    <Border x:Name="bd"
+                            CornerRadius="4"
+                            Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            SnapsToDevicePixels="True">
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="bd" Property="Background" Value="{StaticResource Brush.SubtleHover}" />
+                        </Trigger>
+                        <Trigger Property="IsChecked" Value="True">
+                            <Setter TargetName="bd" Property="Background" Value="{DynamicResource Brush.Accent}" />
+                            <Setter TargetName="bd" Property="BorderBrush" Value="{DynamicResource Brush.Accent}" />
+                            <Setter Property="Foreground" Value="{DynamicResource Brush.OnAccent}" />
+                        </Trigger>
+                        <MultiTrigger>
+                            <MultiTrigger.Conditions>
+                                <Condition Property="IsChecked" Value="True" />
+                                <Condition Property="IsMouseOver" Value="True" />
+                            </MultiTrigger.Conditions>
+                            <Setter TargetName="bd" Property="Background" Value="{DynamicResource Brush.AccentHover}" />
+                        </MultiTrigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
     <!-- Dark TextBox (used for the accent hex input) -->
     <Style x:Key="DarkTextBox" TargetType="TextBox">
         <Setter Property="Foreground" Value="{StaticResource Brush.TextPrimary}" />
