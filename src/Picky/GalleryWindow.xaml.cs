@@ -1030,8 +1030,10 @@ public partial class GalleryWindow : Window
 /// <summary>One entry in the gallery: a lazily-decoded thumbnail plus metadata.</summary>
 public sealed class CaptureItem : INotifyPropertyChanged
 {
-    /// <summary>Search patterns the gallery enumerates, images and clips alike.</summary>
-    internal static readonly string[] SupportedPatterns = { "*.png", "*.jpg", "*.jpeg", "*.mp4" };
+    /// <summary>Search patterns the gallery enumerates, images and clips alike. The video patterns
+    /// mirror <see cref="VideoExtensions"/> so every clip type the gallery can classify also shows up.</summary>
+    internal static readonly string[] SupportedPatterns =
+        { "*.png", "*.jpg", "*.jpeg", "*.mp4", "*.mov", "*.mkv", "*.webm" };
 
     private static readonly string[] VideoExtensions = { ".mp4", ".mkv", ".webm", ".mov" };
 
