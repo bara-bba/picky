@@ -5,12 +5,12 @@ using System.IO;
 namespace Picky;
 
 /// <summary>
-/// Non-destructive video edits driven by the bundled ffmpeg: trim a span out to a new clip,
-/// cut a span away (keep everything else), and grab a single frame as a PNG.
+/// Video edits driven by the bundled ffmpeg: trim a span out to a clip, cut a span away (keep
+/// everything else), and grab a single frame as a PNG.
 ///
-/// <para>Every operation writes a <b>new</b> file beside the source (never overwrites the
-/// original) and reports the path it produced, so the caller can surface it in the gallery.
-/// All timing is in seconds from the start of the clip.</para>
+/// <para>The span operations write to a caller-supplied output path (the editor hands in a temp
+/// working copy, never the original) and report the path they produced. All timing is in seconds
+/// from the start of the clip.</para>
 /// </summary>
 internal static class VideoEditor
 {
@@ -22,49 +22,47 @@ internal static class VideoEditor
     }
 
     /// <summary>
-    /// Exports the span <paramref name="startSeconds"/>..<paramref name="endSeconds"/> to a new
-    /// <c>..._clip.mp4</c>. Tries a lossless stream copy first; if that produces an empty or
-    /// unplayable file (keyframe misalignment can do this), re-encodes so the result is always valid.
+    /// Exports the span <paramref name="startSeconds"/>..<paramref name="endSeconds"/> to
+    /// <paramref name="outputPath"/>. Tries a lossless stream copy first; if that produces an empty
+    /// or unplayable file (keyframe misalignment can do this), re-encodes so the result is valid.
     /// </summary>
-    public static Result ExportSpan(string sourcePath, double startSeconds, double endSeconds)
+    public static Result ExportSpanTo(string sourcePath, double startSeconds, double endSeconds, string outputPath)
     {
         if (!TryValidateSpan(sourcePath, startSeconds, endSeconds, out var error))
         {
             return Result.Fail(error);
         }
 
-        var output = NextPath(sourcePath, "clip");
         double duration = endSeconds - startSeconds;
-
         var ss = Fmt(startSeconds);
         var t = Fmt(duration);
 
         // Accurate seek (-ss after -i) + stream copy keeps it lossless and fast.
-        if (Run($"-y -i \"{sourcePath}\" -ss {ss} -t {t} -c copy -movflags +faststart \"{output}\"")
-            && IsNonEmpty(output))
+        if (Run($"-y -i \"{sourcePath}\" -ss {ss} -t {t} -c copy -movflags +faststart \"{outputPath}\"")
+            && IsNonEmpty(outputPath))
         {
-            return Result.Success(output);
+            return Result.Success(outputPath);
         }
 
         // Copy failed or produced nothing — re-encode (slower, but always valid).
         if (Run($"-y -ss {ss} -i \"{sourcePath}\" -t {t} -c:v libx264 -preset veryfast -crf 23 " +
-                $"-pix_fmt yuv420p -movflags +faststart \"{output}\"")
-            && IsNonEmpty(output))
+                $"-pix_fmt yuv420p -movflags +faststart \"{outputPath}\"")
+            && IsNonEmpty(outputPath))
         {
-            return Result.Success(output);
+            return Result.Success(outputPath);
         }
 
-        SafeDelete(output);
+        SafeDelete(outputPath);
         return Result.Fail("ffmpeg could not export the selected span.");
     }
 
     /// <summary>
-    /// Removes the span <paramref name="startSeconds"/>..<paramref name="endSeconds"/> and keeps
-    /// the rest, writing a new <c>..._cut.mp4</c>. The two surviving pieces (<c>[0,start]</c> and
-    /// <c>[end,eof]</c>) are re-encoded and concatenated through the filtergraph so the join is
+    /// Removes the span <paramref name="startSeconds"/>..<paramref name="endSeconds"/> and keeps the
+    /// rest, writing to <paramref name="outputPath"/>. The two surviving pieces (<c>[0,start]</c>
+    /// and <c>[end,eof]</c>) are re-encoded and concatenated through the filtergraph so the join is
     /// clean regardless of keyframes. A span that touches an end degenerates to a plain trim.
     /// </summary>
-    public static Result RemoveSpan(string sourcePath, double startSeconds, double endSeconds)
+    public static Result RemoveSpanTo(string sourcePath, double startSeconds, double endSeconds, string outputPath)
     {
         if (!TryValidateSpan(sourcePath, startSeconds, endSeconds, out var error))
         {
@@ -86,16 +84,14 @@ internal static class VideoEditor
             return Result.Fail("That would remove the entire clip.");
         }
 
-        var output = NextPath(sourcePath, "cut");
-
         // Only one side survives — it's just a trim of the remaining piece.
         if (keepHead && !keepTail)
         {
-            return TrimTo(sourcePath, output, 0, startSeconds);
+            return TrimTo(sourcePath, outputPath, 0, startSeconds);
         }
         if (!keepHead && keepTail)
         {
-            return TrimTo(sourcePath, output, endSeconds, total);
+            return TrimTo(sourcePath, outputPath, endSeconds, total);
         }
 
         // Both sides survive: encode [0,start] + [end,total] and concat via the filtergraph.
@@ -110,13 +106,13 @@ internal static class VideoEditor
             $"[v0][v1]concat=n=2:v=1:a=0[outv]";
 
         if (Run($"-y -i \"{sourcePath}\" -filter_complex \"{filter}\" -map \"[outv]\" " +
-                $"-c:v libx264 -preset veryfast -crf 23 -pix_fmt yuv420p -movflags +faststart \"{output}\"")
-            && IsNonEmpty(output))
+                $"-c:v libx264 -preset veryfast -crf 23 -pix_fmt yuv420p -movflags +faststart \"{outputPath}\"")
+            && IsNonEmpty(outputPath))
         {
-            return Result.Success(output);
+            return Result.Success(outputPath);
         }
 
-        SafeDelete(output);
+        SafeDelete(outputPath);
         return Result.Fail("ffmpeg could not cut the selected span.");
     }
 
@@ -189,24 +185,6 @@ internal static class VideoEditor
 
         error = string.Empty;
         return true;
-    }
-
-    /// <summary>A sibling path with a <c>_suffix</c> tag, de-duplicated so nothing is overwritten.</summary>
-    private static string NextPath(string sourcePath, string suffix)
-    {
-        var dir = Path.GetDirectoryName(sourcePath)!;
-        var stem = Path.GetFileNameWithoutExtension(sourcePath);
-        var ext = Path.GetExtension(sourcePath);
-
-        var candidate = Path.Combine(dir, $"{stem}_{suffix}{ext}");
-        int n = 2;
-        while (File.Exists(candidate))
-        {
-            candidate = Path.Combine(dir, $"{stem}_{suffix}{n}{ext}");
-            n++;
-        }
-
-        return candidate;
     }
 
     /// <summary>ffmpeg wants a '.'-decimal, culture-invariant seconds value.</summary>

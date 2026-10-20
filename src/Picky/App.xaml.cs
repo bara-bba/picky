@@ -534,6 +534,27 @@ public partial class App : Application
         bool started = false;
         try
         {
+            // Show the region overlay FIRST. The ffmpeg availability probe (below) spawns a process
+            // and waits on it, which on the record hotkey used to run *before* anything appeared —
+            // so Win+Shift+R felt like it hung for a second or more before the overlay showed. The
+            // probe is deferred until a region has actually been picked, so the overlay is instant.
+            Rectangle target;
+
+            if (region is { } fixedRegion)
+            {
+                target = fixedRegion;
+            }
+            else
+            {
+                var overlay = new RegionSelectWindow();
+                if (overlay.ShowDialog() != true)
+                {
+                    return;
+                }
+
+                target = overlay.SelectedRegion;
+            }
+
             if (!RecordingController.IsAvailable())
             {
                 var choice = WinForms.MessageBox.Show(
@@ -550,23 +571,6 @@ public partial class App : Application
                         "https://www.gyan.dev/ffmpeg/builds/") { UseShellExecute = true });
                 }
                 return;
-            }
-
-            Rectangle target;
-
-            if (region is { } fixedRegion)
-            {
-                target = fixedRegion;
-            }
-            else
-            {
-                var overlay = new RegionSelectWindow();
-                if (overlay.ShowDialog() != true)
-                {
-                    return;
-                }
-
-                target = overlay.SelectedRegion;
             }
 
             var folder = Settings.EnsureCaptureFolder();

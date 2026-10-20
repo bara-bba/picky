@@ -124,18 +124,37 @@
                         Style="{StaticResource SubtleButton}"
                         ToolTip="Save the current frame as a screenshot and open it in the editor"
                         Margin="0,0,8,0" />
-                <Button Name="ExportButton"
-                        Content="Export selection"
-                        Click="ExportSelection_Click"
+                <Button Name="TrimButton"
+                        Content="Keep selection"
+                        Click="TrimSelection_Click"
                         Style="{StaticResource SubtleButton}"
-                        ToolTip="Export the span between the two active markers to a new clip"
+                        ToolTip="Trim the clip down to the span between the two active markers"
                         IsEnabled="False"
                         Margin="0,0,8,0" />
                 <Button Name="RemoveButton"
                         Content="Remove selection"
                         Click="RemoveSelection_Click"
-                        Style="{StaticResource AccentButton}"
+                        Style="{StaticResource SubtleButton}"
                         ToolTip="Cut the span between the two active markers out and keep the rest"
+                        IsEnabled="False"
+                        Margin="0,0,8,0" />
+
+                <Border Width="1"
+                        Background="{StaticResource Brush.Stroke}"
+                        Margin="2,2,10,2" />
+
+                <Button Name="SaveButton"
+                        Content="Save"
+                        Click="Save_Click"
+                        Style="{StaticResource AccentButton}"
+                        ToolTip="Overwrite the original clip with your edits (Ctrl+S)"
+                        IsEnabled="False"
+                        Margin="0,0,8,0" />
+                <Button Name="SaveCopyButton"
+                        Content="Save a copy…"
+                        Click="SaveCopy_Click"
+                        Style="{StaticResource SubtleButton}"
+                        ToolTip="Save your edits to a new file, keeping the original"
                         IsEnabled="False" />
             </StackPanel>
         </Grid>

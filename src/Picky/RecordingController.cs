@@ -36,9 +36,20 @@ internal sealed class RecordingController
         return File.Exists(local) ? local : "ffmpeg";
     }
 
-    /// <summary>Whether ffmpeg can actually be launched (installed / on PATH).</summary>
+    /// <summary>
+    /// Whether ffmpeg can actually be launched (installed / on PATH). Cached after the first
+    /// successful probe: launching <c>ffmpeg -version</c> costs a process spawn, and the result
+    /// doesn't change within a session, so there's no reason to pay it on every record.
+    /// </summary>
+    private static bool? _available;
+
     public static bool IsAvailable()
     {
+        if (_available == true)
+        {
+            return true;
+        }
+
         try
         {
             using var probe = Process.Start(new ProcessStartInfo(FindFfmpeg(), "-version")
@@ -53,10 +64,12 @@ internal sealed class RecordingController
                 return false;
             }
             probe.WaitForExit(3000);
+            _available = true;
             return true;
         }
         catch
         {
+            // Not found this time — don't cache the failure, so installing ffmpeg mid-session works.
             return false;
         }
     }
