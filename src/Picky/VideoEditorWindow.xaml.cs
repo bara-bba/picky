@@ -46,6 +46,11 @@ public partial class VideoEditorWindow : Window
     private bool _playing;
     private bool _mediaReady;
 
+    // Play/pause glyphs. The trailing U+FE0E (text variation selector) forces a flat monochrome
+    // render so the pause doesn't come out as a mismatched colour emoji next to the play triangle.
+    private const string PlayGlyph = "\u25B6\uFE0E";   // ▶
+    private const string PauseGlyph = "\u23F8\uFE0E";  // ⏸
+
     // Timeline drag-to-select state: the press position, and whether the pointer has moved far
     // enough to count as a drag (vs. a plain click, which just seeks).
     private double _dragStartX;
@@ -67,6 +72,7 @@ public partial class VideoEditorWindow : Window
         _workingPath = sourcePath;
         Title = $"picky — {System.IO.Path.GetFileName(sourcePath)}";
 
+        PlayPauseButton.Content = PlayGlyph;
         SelectionBand.Fill = SelectionBrush();
 
         // Drive the playhead/time readout while playing.
@@ -122,7 +128,7 @@ public partial class VideoEditorWindow : Window
         Player.Pause();
         _playing = false;
         _playheadTimer.Stop();
-        PlayPauseButton.Content = "▶";
+        PlayPauseButton.Content = PlayGlyph;
     }
 
     private void Player_MediaFailed(object sender, ExceptionRoutedEventArgs e)
@@ -153,7 +159,7 @@ public partial class VideoEditorWindow : Window
             Player.Pause();
             _playing = false;
             _playheadTimer.Stop();
-            PlayPauseButton.Content = "▶";
+            PlayPauseButton.Content = PlayGlyph;
             SyncPlayhead();
         }
         else
@@ -167,7 +173,7 @@ public partial class VideoEditorWindow : Window
             Player.Play();
             _playing = true;
             _playheadTimer.Start();
-            PlayPauseButton.Content = "⏸";
+            PlayPauseButton.Content = PauseGlyph;
         }
     }
 
