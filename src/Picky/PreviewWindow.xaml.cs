@@ -73,6 +73,7 @@ public partial class PreviewWindow : Window
     private Manip _manip = Manip.None;
     private Matrix _m0;
     private Point _anchorLocal;
+    private System.Windows.Size _sizeAtGrab;
     private Point _cornerLocal;
     private Point _rotCenter;
     private double _rotStartAngle;
@@ -1003,8 +1004,15 @@ public partial class PreviewWindow : Window
 
     private static void SetElemMatrix(UIElement el, Matrix m) => ((MatrixTransform)el.RenderTransform).Matrix = m;
 
-    private static Rect LocalBounds(UIElement el)
-        => el is WpfPath p && p.Data is not null ? p.Data.Bounds : new Rect(new Point(0, 0), el.RenderSize);
+    // A rectangle's Width/Height change immediately on resize while RenderSize lags until the
+    // next layout pass, so read the set size to keep the selection handles in step.
+    private static Rect LocalBounds(UIElement el) => el switch
+    {
+        WpfPath p when p.Data is not null => p.Data.Bounds,
+        WpfRectangle r when !double.IsNaN(r.Width) && !double.IsNaN(r.Height)
+            => new Rect(0, 0, r.Width, r.Height),
+        _ => new Rect(new Point(0, 0), el.RenderSize),
+    };
 
     private static Point[] LocalCorners(UIElement el)
     {
@@ -1179,6 +1187,7 @@ public partial class PreviewWindow : Window
             int i = (int)handle.Tag;
             _cornerLocal = local[i];
             _anchorLocal = local[(i + 2) % 4];
+            _sizeAtGrab = LocalBounds(_selection[0]).Size;
         }
 
         handle.CaptureMouse();
@@ -1272,9 +1281,34 @@ public partial class PreviewWindow : Window
             sy = uniform;
         }
 
+        if (_selection[0] is WpfRectangle rect)
+        {
+            ResizeRectangle(rect, sx, sy);
+            return;
+        }
+
         var s = Matrix.Identity;
         s.ScaleAt(sx, sy, _anchorLocal.X, _anchorLocal.Y);
         SetElemMatrix(_selection[0], Matrix.Multiply(s, _m0));
+    }
+
+    // Rectangles resize by their real Width/Height, not by scaling the transform: a scale
+    // would stretch the stroke too, so the border would thicken unevenly. The anchor corner
+    // stays pinned on the canvas by shifting the matrix by how far it moved in local space.
+    private void ResizeRectangle(WpfRectangle rect, double sx, double sy)
+    {
+        double w = _sizeAtGrab.Width * sx;
+        double h = _sizeAtGrab.Height * sy;
+        var anchorNew = new Point(
+            _anchorLocal.X > 0.001 ? w : 0,
+            _anchorLocal.Y > 0.001 ? h : 0);
+
+        rect.Width = w;
+        rect.Height = h;
+
+        var t = Matrix.Identity;
+        t.Translate(_anchorLocal.X - anchorNew.X, _anchorLocal.Y - anchorNew.Y);
+        SetElemMatrix(rect, Matrix.Multiply(t, _m0));
     }
 
     private void ApplyRotate(Point mouseCanvas)
