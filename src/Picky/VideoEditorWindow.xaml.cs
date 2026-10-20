@@ -415,7 +415,9 @@ public partial class VideoEditorWindow : Window
             () => VideoEditor.GrabFrame(_workingPath, Player.Position.TotalSeconds, folder),
             result =>
             {
-                // Open the saved frame in the screenshot editor — the same annotate/save flow.
+                // Surface it in the gallery like any other screenshot (docked, selected), so it's
+                // visibly saved there, then open it in the screenshot editor to annotate/save.
+                ((App)System.Windows.Application.Current).ShowGalleryDocked(result.OutputPath!);
                 PreviewWindow.FromFile(result.OutputPath!).Show();
             });
     }
