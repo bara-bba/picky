@@ -214,12 +214,20 @@ public partial class GalleryWindow : Window
         UpdateRecordButton();
     }
 
-    // Double-click a thumbnail to open it: images go to the annotating preview, clips to
-    // whatever plays video by default (PreviewWindow is an image editor and can't show them).
+    // Double-click a thumbnail to open it: images go to the annotating preview, clips to the
+    // in-app video editor.
     private void Thumbnail_DoubleClick(object sender, MouseButtonEventArgs e)
     {
-        if (FindAncestor<ListBoxItem>(e.OriginalSource as DependencyObject)?.DataContext is not CaptureItem item
-            || !File.Exists(item.Path))
+        if (FindAncestor<ListBoxItem>(e.OriginalSource as DependencyObject)?.DataContext is CaptureItem item)
+        {
+            OpenItem(item);
+        }
+    }
+
+    /// <summary>Opens one capture in the right editor: images -> PreviewWindow, clips -> VideoEditorWindow.</summary>
+    private static void OpenItem(CaptureItem item)
+    {
+        if (!File.Exists(item.Path))
         {
             return;
         }
@@ -227,10 +235,47 @@ public partial class GalleryWindow : Window
         if (item.IsVideo)
         {
             new VideoEditorWindow(item.Path).Show();
+        }
+        else
+        {
+            PreviewWindow.FromFile(item.Path).Show();
+        }
+    }
+
+    /// <summary>
+    /// Opens every selected capture, each in its own editor window. Opening a lot of editors at
+    /// once is almost certainly an accident (Ctrl+A then Enter), so beyond a threshold we confirm
+    /// first rather than spawning dozens of windows.
+    /// </summary>
+    private void OpenSelected()
+    {
+        var items = ThumbnailList.SelectedItems
+            .Cast<CaptureItem>()
+            .Where(i => File.Exists(i.Path))
+            .ToList();
+
+        if (items.Count == 0)
+        {
             return;
         }
 
-        PreviewWindow.FromFile(item.Path).Show();
+        const int confirmThreshold = 8;
+        if (items.Count > confirmThreshold)
+        {
+            var answer = MessageBox.Show(
+                this,
+                $"Open {items.Count} editor windows, one per selected capture?",
+                "Picky", MessageBoxButton.YesNo, MessageBoxImage.Question);
+            if (answer != MessageBoxResult.Yes)
+            {
+                return;
+            }
+        }
+
+        foreach (var item in items)
+        {
+            OpenItem(item);
+        }
     }
 
     // Right-click selects the card under the cursor (unless it's already part of the
@@ -524,6 +569,15 @@ public partial class GalleryWindow : Window
         if (e.Key == Key.Delete)
         {
             DeleteSelected();
+            e.Handled = true;
+            return;
+        }
+
+        // Enter opens every selected capture, each in its own editor (images -> preview,
+        // clips -> video editor) — so a multi-selection pops one window per item.
+        if (e.Key is Key.Enter or Key.Return)
+        {
+            OpenSelected();
             e.Handled = true;
             return;
         }
