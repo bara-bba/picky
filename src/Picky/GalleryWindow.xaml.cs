@@ -116,6 +116,8 @@ public partial class GalleryWindow : Window
         _syncingSelection = false;
 
         ThumbnailList.ScrollIntoView(_items[index]);
+
+        ThumbnailList.UpdateLayout(); // realise the (virtualized) card before looking it up
         if (ThumbnailList.ItemContainerGenerator.ContainerFromIndex(index) is ListBoxItem container)
         {
             container.Focus();
@@ -700,6 +702,8 @@ public partial class GalleryWindow : Window
         _syncingSelection = false;
 
         ThumbnailList.ScrollIntoView(_items[target]);
+
+        ThumbnailList.UpdateLayout(); // realise the (virtualized) card before looking it up
         if (ThumbnailList.ItemContainerGenerator.ContainerFromIndex(target) is ListBoxItem container)
         {
             container.Focus();
@@ -721,8 +725,21 @@ public partial class GalleryWindow : Window
     // How many cards sit in the top row of the current wrap layout.
     private int ColumnsPerRow()
     {
-        if (_items.Count == 0
-            || ThumbnailList.ItemContainerGenerator.ContainerFromIndex(0) is not ListBoxItem first)
+        // The gallery virtualizes, so card 0 may not exist once scrolled. Measure the first row
+        // that is realised instead; the panel always realises whole rows.
+        int start = -1;
+        ListBoxItem? first = null;
+        for (int i = 0; i < _items.Count; i++)
+        {
+            if (ThumbnailList.ItemContainerGenerator.ContainerFromIndex(i) is ListBoxItem c)
+            {
+                start = i;
+                first = c;
+                break;
+            }
+        }
+
+        if (first is null)
         {
             return 1;
         }
@@ -730,7 +747,7 @@ public partial class GalleryWindow : Window
         double firstY = first.TransformToAncestor(ThumbnailList).Transform(new Point(0, 0)).Y;
         int cols = 0;
 
-        for (int i = 0; i < _items.Count; i++)
+        for (int i = start; i < _items.Count; i++)
         {
             if (ThumbnailList.ItemContainerGenerator.ContainerFromIndex(i) is not ListBoxItem c)
             {
@@ -1165,9 +1182,18 @@ public sealed class CaptureItem : INotifyPropertyChanged
         }
     }
 
+    /// <summary>
+    /// Loaded lazily: the first read (a card binding to it as it scrolls into view) starts the
+    /// background decode. With the virtualizing gallery, off-screen captures never pay for one,
+    /// so opening a folder of hundreds of shots no longer queues hundreds of decodes at once.
+    /// </summary>
     public ImageSource? Thumbnail
     {
-        get => _thumbnail;
+        get
+        {
+            EnsureThumbnailLoading();
+            return _thumbnail;
+        }
         private set
         {
             _thumbnail = value;
@@ -1184,7 +1210,24 @@ public sealed class CaptureItem : INotifyPropertyChanged
 
         if (IsVideo)
         {
-            DurationText = "video";
+            _durationText = "video";
+        }
+    }
+
+    private bool _loadStarted;
+
+    // UI thread only (binding reads), so a plain flag is enough to start each load once.
+    private void EnsureThumbnailLoading()
+    {
+        if (_loadStarted)
+        {
+            return;
+        }
+
+        _loadStarted = true;
+
+        if (IsVideo)
+        {
             LoadVideoPosterAsync();
         }
         else

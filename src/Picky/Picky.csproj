@@ -27,6 +27,9 @@
   <ItemGroup>
     <!-- Installer + delta auto-update. Also provides the `vpk` packaging CLI. -->
     <PackageReference Include="Velopack" Version="1.2.0" />
+    <!-- Virtualizing wrap layout for the gallery: only on-screen cards are realised, so a folder
+         of hundreds of captures stays fast to open and scroll. -->
+    <PackageReference Include="VirtualizingWrapPanel" Version="2.5.4" />
   </ItemGroup>
 
   <ItemGroup>
