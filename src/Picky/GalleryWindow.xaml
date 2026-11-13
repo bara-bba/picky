@@ -10,7 +10,11 @@
         Background="{StaticResource Brush.App}"
         Foreground="{StaticResource Brush.TextPrimary}"
         FontFamily="Segoe UI Variable, Segoe UI"
-        WindowStartupLocation="CenterScreen">
+        WindowStartupLocation="CenterScreen"
+        AllowDrop="True"
+        DragEnter="Gallery_DragOver"
+        DragOver="Gallery_DragOver"
+        Drop="Gallery_Drop">
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVisibility" />
     </Window.Resources>

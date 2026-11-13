@@ -151,7 +151,17 @@
                 </StackPanel>
             </Grid>
 
-            <!-- Image + annotation surface -->
+            <!-- Image + annotation surface. Ctrl+wheel zooms (ZoomScale on the wrapper, not on
+                 EditorSurface, so RenderEdited still renders the surface unscaled); the scroll
+                 viewer pans once the zoomed image is larger than the window. -->
+            <ScrollViewer Name="ZoomScroller"
+                          HorizontalScrollBarVisibility="Auto"
+                          VerticalScrollBarVisibility="Auto"
+                          PreviewMouseWheel="ZoomScroller_PreviewMouseWheel">
+            <Grid Name="ZoomHost" HorizontalAlignment="Center" VerticalAlignment="Center">
+                <Grid.LayoutTransform>
+                    <ScaleTransform x:Name="ZoomScale" ScaleX="1" ScaleY="1" />
+                </Grid.LayoutTransform>
             <Border CornerRadius="4"
                     ClipToBounds="True"
                     BorderBrush="{StaticResource Brush.Stroke}"
@@ -170,6 +180,8 @@
                             MouseLeftButtonUp="Canvas_MouseLeftButtonUp" />
                 </Grid>
             </Border>
+            </Grid>
+            </ScrollViewer>
         </DockPanel>
     </Border>
 </Window>

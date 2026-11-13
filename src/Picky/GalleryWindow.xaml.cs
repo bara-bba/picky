@@ -210,6 +210,16 @@ public partial class GalleryWindow : Window
             var (path, time) = onDisk[target];
             var item = existing.TryGetValue(path, out var found) ? found : new CaptureItem(path, time);
 
+            // The file was rewritten since its card was made (an editor saved over it): swap in a
+            // fresh card so the thumbnail and time are decoded again instead of showing the old one.
+            if (found is not null && found.Time != time)
+            {
+                int stale = _items.IndexOf(found);
+                item = new CaptureItem(path, time);
+                existing[path] = item;
+                _items[stale] = item;
+            }
+
             int current = _items.IndexOf(item);
             if (current == target)
             {
@@ -357,7 +367,9 @@ public partial class GalleryWindow : Window
             var image = new BitmapImage();
             image.BeginInit();
             image.CacheOption = BitmapCacheOption.OnLoad; // decode now, don't hold the file open
-            image.CreateOptions = BitmapCreateOptions.IgnoreColorProfile;
+            // IgnoreImageCache: WPF otherwise caches decoded images by URI for the whole process,
+            // so a capture saved over in the editor kept showing its pre-edit picture.
+            image.CreateOptions = BitmapCreateOptions.IgnoreColorProfile | BitmapCreateOptions.IgnoreImageCache;
             image.UriSource = new Uri(paths[0]);
             image.EndInit();
             image.Freeze();
@@ -985,6 +997,98 @@ public partial class GalleryWindow : Window
 
     private void RefreshButton_Click(object sender, RoutedEventArgs e) => Refresh();
 
+    // --- Drop pictures / videos from Explorer into the gallery ---
+
+    /// <summary>Dropped files the gallery can show and that aren't already in the capture folder.</summary>
+    private static string[] DroppableFiles(IDataObject data)
+    {
+        if (data.GetData(DataFormats.FileDrop) is not string[] files)
+        {
+            return Array.Empty<string>();
+        }
+
+        var folder = Path.GetFullPath(App.Settings.CaptureFolder);
+        var extensions = CaptureItem.SupportedPatterns.Select(p => p.TrimStart('*')).ToArray();
+        return files
+            .Where(File.Exists)
+            .Where(f => extensions.Contains(Path.GetExtension(f), StringComparer.OrdinalIgnoreCase))
+            .Where(f => !string.Equals(Path.GetDirectoryName(Path.GetFullPath(f)), folder.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+    }
+
+    private void Gallery_DragOver(object sender, DragEventArgs e)
+    {
+        // _dragging: our own thumbnails being dragged out must not be copied back in.
+        e.Effects = !_dragging && DroppableFiles(e.Data).Length > 0 ? DragDropEffects.Copy : DragDropEffects.None;
+        e.Handled = true;
+    }
+
+    private async void Gallery_Drop(object sender, DragEventArgs e)
+    {
+        e.Handled = true;
+        if (_dragging)
+        {
+            return;
+        }
+
+        var files = DroppableFiles(e.Data);
+        if (files.Length == 0)
+        {
+            return;
+        }
+
+        var folder = App.Settings.EnsureCaptureFolder();
+        var copied = new List<string>();
+        var failed = new List<string>();
+
+        // Off the UI thread: a dropped recording can be hundreds of MB.
+        await Task.Run(() =>
+        {
+            foreach (var source in files)
+            {
+                try
+                {
+                    var target = FreeName(folder, Path.GetFileName(source));
+                    File.Copy(source, target);
+                    // Stamp "now" so the drop lands at the top of the newest-first gallery
+                    // instead of wherever the original's date would sort it.
+                    File.SetLastWriteTime(target, DateTime.Now);
+                    copied.Add(target);
+                }
+                catch (Exception ex)
+                {
+                    failed.Add($"{Path.GetFileName(source)}: {ex.Message}");
+                }
+            }
+        });
+
+        Refresh();
+        if (copied.Count > 0)
+        {
+            SelectByPath(copied[^1]);
+        }
+
+        if (failed.Count > 0)
+        {
+            MessageBox.Show(this, "Couldn't add:\n" + string.Join("\n", failed), "Picky",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    /// <summary>"name.png", or "name (2).png", "name (3).png", … if that is taken.</summary>
+    private static string FreeName(string folder, string fileName)
+    {
+        var candidate = Path.Combine(folder, fileName);
+        var stem = Path.GetFileNameWithoutExtension(fileName);
+        var ext = Path.GetExtension(fileName);
+        for (int n = 2; File.Exists(candidate); n++)
+        {
+            candidate = Path.Combine(folder, $"{stem} ({n}){ext}");
+        }
+
+        return candidate;
+    }
+
     /// <summary>True while the gallery is pinned: it ignores click-away and stays above other apps.</summary>
     public bool IsPinned => _pinned;
 
@@ -1168,6 +1272,9 @@ public sealed class CaptureItem : INotifyPropertyChanged
     public string FileName { get; }
     public string TimeText { get; }
 
+    /// <summary>The file's last write time when the card was made; a change means it was edited.</summary>
+    public DateTime Time { get; }
+
     /// <summary>True for recordings, which get a play badge and open in an external player.</summary>
     public bool IsVideo { get; }
 
@@ -1205,6 +1312,7 @@ public sealed class CaptureItem : INotifyPropertyChanged
     {
         Path = path;
         FileName = System.IO.Path.GetFileName(path);
+        Time = time;
         TimeText = time.ToString("g");
         IsVideo = VideoExtensions.Contains(System.IO.Path.GetExtension(path).ToLowerInvariant());
 
@@ -1301,7 +1409,9 @@ public sealed class CaptureItem : INotifyPropertyChanged
             var image = new BitmapImage();
             image.BeginInit();
             image.CacheOption = BitmapCacheOption.OnLoad; // decode now, don't lock the file
-            image.CreateOptions = BitmapCreateOptions.IgnoreColorProfile;
+            // IgnoreImageCache: WPF otherwise caches decoded images by URI for the whole process,
+            // so a capture saved over in the editor kept showing its pre-edit picture.
+            image.CreateOptions = BitmapCreateOptions.IgnoreColorProfile | BitmapCreateOptions.IgnoreImageCache;
             image.DecodePixelWidth = 260;
             image.UriSource = new Uri(path);
             image.EndInit();

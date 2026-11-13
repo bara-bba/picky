@@ -338,6 +338,16 @@ public partial class PreviewWindow : Window
         }
 
         _color = brush;
+
+        // A text box still being typed in is not in the selection yet: recolour it too, and keep
+        // the caret in it so typing carries on.
+        if (_activeText is not null)
+        {
+            _activeText.Foreground = brush;
+            _activeText.CaretBrush = brush;
+            _activeText.Focus();
+        }
+
         foreach (var el in _selection)
         {
             if (el is WpfShape shape)
@@ -553,6 +563,68 @@ public partial class PreviewWindow : Window
 
     private void Delete_Click(object sender, RoutedEventArgs e) => DeleteSelected();
 
+    // --- Zoom (Ctrl+mouse wheel, Ctrl+0 resets) ---
+
+    private const double ZoomMin = 0.25;
+    private const double ZoomMax = 8;
+    private const double ZoomStep = 1.15;
+
+    private void ZoomScroller_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
+    {
+        if ((Keyboard.Modifiers & ModifierKeys.Control) == 0)
+        {
+            return; // plain wheel scrolls the zoomed image as usual
+        }
+
+        e.Handled = true;
+        double factor = e.Delta > 0 ? ZoomStep : 1 / ZoomStep;
+        SetZoom(ZoomScale.ScaleX * factor, e.GetPosition(EditorSurface), e.GetPosition(ZoomScroller));
+    }
+
+    /// <summary>
+    /// Scales the surface around <paramref name="anchor"/> (a point in image coordinates) so that the
+    /// pixel under the cursor stays under the cursor. Drawing keeps working at any zoom: mouse input
+    /// is read in canvas coordinates, which the layout transform maps back for us.
+    /// </summary>
+    private void SetZoom(double scale, Point anchor, Point anchorInViewport)
+    {
+        scale = Math.Clamp(scale, ZoomMin, ZoomMax);
+        if (Math.Abs(scale - 1) < 0.02)
+        {
+            scale = 1; // snap back to the fit view instead of stopping at 0.99
+        }
+
+        if (Math.Abs(scale - ZoomScale.ScaleX) < 0.0001)
+        {
+            return;
+        }
+
+        // The window sizes itself to the image. Freeze that size on the first zoom, or zooming in
+        // would just grow the window off-screen instead of letting the image scroll inside it.
+        if (SizeToContent != SizeToContent.Manual)
+        {
+            var (w, h) = (ActualWidth, ActualHeight);
+            SizeToContent = SizeToContent.Manual;
+            Width = w;
+            Height = h;
+            ResizeMode = ResizeMode.CanResize;
+        }
+
+        ZoomScale.ScaleX = scale;
+        ZoomScale.ScaleY = scale;
+        ZoomScroller.UpdateLayout();
+
+        var now = EditorSurface.TranslatePoint(anchor, ZoomScroller);
+        ZoomScroller.ScrollToHorizontalOffset(ZoomScroller.HorizontalOffset + now.X - anchorInViewport.X);
+        ZoomScroller.ScrollToVerticalOffset(ZoomScroller.VerticalOffset + now.Y - anchorInViewport.Y);
+    }
+
+    private void ResetZoom()
+    {
+        var center = new Point(ZoomScroller.ViewportWidth / 2, ZoomScroller.ViewportHeight / 2);
+        SetZoom(1, ZoomScroller.TranslatePoint(center, EditorSurface), center);
+    }
+
     protected override void OnKeyDown(KeyEventArgs e)
     {
         bool typing = _activeText is not null || Keyboard.FocusedElement is TextBox;
@@ -582,6 +654,11 @@ public partial class PreviewWindow : Window
             else if (ctrl && e.Key == Key.C)
             {
                 CopyToClipboard();
+                e.Handled = true;
+            }
+            else if (ctrl && e.Key is Key.D0 or Key.NumPad0)
+            {
+                ResetZoom();
                 e.Handled = true;
             }
             else if (e.Key == Key.Delete && _selection.Count > 0)
@@ -1538,6 +1615,7 @@ public partial class PreviewWindow : Window
         {
             WritePng(RenderEdited(), _savedPath);
             _dirty = false;
+            ((App)System.Windows.Application.Current).RefreshGallery();
             return true;
         }
         catch (Exception ex)
@@ -1562,6 +1640,7 @@ public partial class PreviewWindow : Window
 
         WritePng(RenderEdited(), dialog.FileName);
         _dirty = false;
+        ((App)System.Windows.Application.Current).RefreshGallery();
         return true;
     }
 

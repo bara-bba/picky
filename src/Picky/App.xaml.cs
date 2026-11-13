@@ -698,6 +698,9 @@ public partial class App : Application
         editor.Show();
     }
 
+    /// <summary>Re-syncs an open gallery with the folder (after an editor saved), without popping it.</summary>
+    internal void RefreshGallery() => _gallery?.Refresh();
+
     /// <summary>Pops the gallery anchored to the lower-right corner (Screenpresso-style).</summary>
     public void ShowGalleryDocked() => ShowGallery(dockLowerRight: true, selectPath: null);
 
