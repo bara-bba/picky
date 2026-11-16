@@ -131,6 +131,7 @@ public partial class GalleryWindow : Window
     protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
     {
         _closing = true;
+        Trace("closing");
 
         // Editors adopted while pinned would otherwise close together with their owner.
         foreach (Window owned in OwnedWindows.Cast<Window>().ToList())
@@ -152,12 +153,79 @@ public partial class GalleryWindow : Window
             return;
         }
 
+        bool wouldClose = AutoCloseOnDeactivate && !_pinned && !_suppressAutoClose && !_modalOpen && !_dragging;
+
+        // Right after a tray click the taskbar can take focus back from the popup. Closing then
+        // looks like the gallery never opened, so take the front once more and stay open instead.
+        if (wouldClose && DateTime.UtcNow - _poppedAt < PopGracePeriod)
+        {
+            _poppedAt = DateTime.MinValue; // only once per pop
+            bool front = Native.WindowPlacement.ForceForeground(this);
+            Trace($"deactivated during pop grace, kept open (foreground={front})");
+            return;
+        }
+
+        Trace($"deactivated (closing={wouldClose})");
+
         // A drag into another app deactivates us; closing mid-drag would abort the drop.
         // _pinned keeps the popup open on click-away until the user unpins it.
-        if (AutoCloseOnDeactivate && !_pinned && !_suppressAutoClose && !_modalOpen && !_dragging)
+        if (wouldClose)
         {
             _closing = true;
             Close();
+        }
+    }
+
+    private static readonly TimeSpan PopGracePeriod = TimeSpan.FromMilliseconds(600);
+    private DateTime _poppedAt = DateTime.MinValue;
+
+    /// <summary>
+    /// Shows the gallery and brings it to the front. The docked popup is Topmost while open: it
+    /// closes on click-away anyway, and Topmost keeps it visible even if Windows refuses focus.
+    /// </summary>
+    internal void PopUp()
+    {
+        Topmost = _pinned || AutoCloseOnDeactivate;
+        _poppedAt = DateTime.UtcNow;
+
+        if (!IsVisible)
+        {
+            Show();
+        }
+
+        bool front = Native.WindowPlacement.ForceForeground(this);
+        Trace($"pop docked={AutoCloseOnDeactivate} pinned={_pinned} foreground={front}");
+    }
+
+    protected override void OnActivated(EventArgs e)
+    {
+        base.OnActivated(e);
+        Trace("activated");
+    }
+
+    /// <summary>
+    /// Appends one line to <c>%LocalAppData%\Picky\gallery.log</c>, so a gallery that "doesn't
+    /// show" leaves evidence of whether it opened, got focus, and why it closed. Capped at 256 KB.
+    /// </summary>
+    internal static void Trace(string message)
+    {
+        try
+        {
+            var folder = System.IO.Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Picky");
+            System.IO.Directory.CreateDirectory(folder);
+            var file = System.IO.Path.Combine(folder, "gallery.log");
+
+            if (System.IO.File.Exists(file) && new System.IO.FileInfo(file).Length > 256 * 1024)
+            {
+                System.IO.File.Delete(file);
+            }
+
+            System.IO.File.AppendAllText(file, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff} {message}{Environment.NewLine}");
+        }
+        catch
+        {
+            // Diagnostics must never break the gallery.
         }
     }
 
@@ -1101,7 +1169,7 @@ public partial class GalleryWindow : Window
     private void PinButton_Changed(object sender, RoutedEventArgs e)
     {
         _pinned = PinButton.IsChecked == true;
-        Topmost = _pinned;
+        Topmost = _pinned || AutoCloseOnDeactivate;
 
         PinButton.Content = _pinned ? "\uE840" : "\uE718"; // Pinned (filled) / Pin
         PinButton.ToolTip = _pinned

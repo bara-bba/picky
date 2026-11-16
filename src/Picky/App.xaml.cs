@@ -725,12 +725,7 @@ public partial class App : Application
             DockLowerRight(_gallery);
         }
 
-        if (!_gallery.IsVisible)
-        {
-            _gallery.Show();
-        }
-
-        _gallery.Activate();
+        _gallery.PopUp();
 
         // Give a thumbnail an active selection + keyboard focus so an arrow key moves the
         // selection straight away: the just-captured shot when one was passed, else the

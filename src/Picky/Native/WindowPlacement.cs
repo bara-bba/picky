@@ -82,7 +82,78 @@ internal static class WindowPlacement
         return ((int)Math.Ceiling(dipWidth * scale), (int)Math.Ceiling(dipHeight * scale));
     }
 
+    /// <summary>
+    /// Brings <paramref name="window"/> to the front and gives it focus, even from a tray click.
+    /// </summary>
+    /// <remarks>
+    /// <c>Window.Activate()</c> alone is refused by Windows' foreground lock when Picky isn't the
+    /// foreground app (a tray click leaves the taskbar in front), and the window then opens behind
+    /// whatever app was active. Briefly attaching to the foreground thread's input queue lets
+    /// <c>SetForegroundWindow</c> succeed. Returns true when the window ended up in the foreground.
+    /// </remarks>
+    public static bool ForceForeground(Window window)
+    {
+        var hwnd = new WindowInteropHelper(window).EnsureHandle();
+        if (hwnd == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        if (IsIconic(hwnd))
+        {
+            ShowWindow(hwnd, SW_RESTORE);
+        }
+
+        var foreground = GetForegroundWindow();
+        uint foregroundThread = foreground == IntPtr.Zero ? 0 : GetWindowThreadProcessId(foreground, out _);
+        uint ownThread = GetCurrentThreadId();
+        bool attached = foregroundThread != 0 && foregroundThread != ownThread
+            && AttachThreadInput(ownThread, foregroundThread, true);
+
+        try
+        {
+            BringWindowToTop(hwnd);
+            SetForegroundWindow(hwnd);
+        }
+        finally
+        {
+            if (attached)
+            {
+                AttachThreadInput(ownThread, foregroundThread, false);
+            }
+        }
+
+        window.Activate();
+        return GetForegroundWindow() == hwnd;
+    }
+
     // --- Win32 ---
+
+    private const int SW_RESTORE = 9;
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    private static extern bool SetForegroundWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    private static extern bool BringWindowToTop(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    private static extern bool IsIconic(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+
+    [DllImport("user32.dll")]
+    private static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
+
+    [DllImport("kernel32.dll")]
+    private static extern uint GetCurrentThreadId();
 
     private const uint SWP_NOSIZE = 0x0001;
     private const uint SWP_NOZORDER = 0x0004;
